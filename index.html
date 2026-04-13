@@ -1,0 +1,1816 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MAISON Ô — Pricing Intelligence & Produkttext v4.0</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👜</text></svg>">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; }
+    body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+  
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- React 18 -->
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <!-- D3 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+  <!-- Babel Standalone for JSX -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+
+  <script type="text/babel" data-type="module">
+    // React hooks from global
+    const { useState, useEffect, useCallback, useRef, useMemo } = React;
+
+// ═══════════════════════════════════════════════════════════════
+// LIVE DATA FETCHING — Real Market Prices from Web Scraping
+// ═══════════════════════════════════════════════════════════════
+
+async function fetchRealListings(brand, category, productName, material, color) {
+  try {
+    const response = await fetch('/.netlify/functions/scrape-prices', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        brand,
+        category,
+        productName,
+        material,
+        color
+      })
+    });
+
+    if (!response.ok) {
+      console.error('Scraping API error:', response.status);
+      return null;
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('Error fetching real listings:', error);
+    return null;
+  }
+}
+
+function convertRealListingsToPricing(realData, brandData, category, condition) {
+  if (!realData || !realData.vinted) return null;
+
+  try {
+    const allListings = [
+      ...(realData.vinted.listings || []),
+      ...(realData.ebay.listings || []),
+      ...(realData.vestiaire.listings || [])
+    ];
+
+    if (allListings.length === 0) return null;
+
+    // Calculate price statistics from real data
+    const prices = allListings.map(l => l.price).filter(p => p > 0 && p < 50000);
+    if (prices.length === 0) return null;
+
+    prices.sort((a, b) => a - b);
+    const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
+    const median = prices[Math.floor(prices.length / 2)];
+    const p25 = prices[Math.floor(prices.length * 0.25)];
+    const p75 = prices[Math.floor(prices.length * 0.75)];
+
+    return {
+      prices: {
+        low: Math.round(p25),
+        mid: Math.round(median),
+        high: Math.round(p75),
+        avg: Math.round(avg)
+      },
+      count: allListings.length,
+      realListings: allListings.slice(0, 30)
+    };
+  } catch (e) {
+    console.error('Error converting real listings:', e);
+    return null;
+  }
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════
+// MAISON Ô — Unified AI Pricing Solution v4.0
+// Cross-Platform Market Intelligence for Vintage & Designer Resale
+// ═══════════════════════════════════════════════════════════════
+
+// ── Brand Database ──
+const BRAND_DATABASE = {
+  "Hermès": { tier: "S", hypeScore: 0.98, retentionRate: 0.85, categories: { Taschen: 1.15, Kleidung: 0.75, Schuhe: 0.80, Accessoires: 1.05, Schmuck: 1.16, Uhren: 1.04 }},
+  "Chanel": { tier: "S", hypeScore: 0.95, retentionRate: 0.80, categories: { Taschen: 1.10, Kleidung: 0.78, Schuhe: 0.75, Accessoires: 1.00, Schmuck: 1.10, Uhren: 0.99 }},
+  "Louis Vuitton": { tier: "S", hypeScore: 0.90, retentionRate: 0.72, categories: { Taschen: 1.05, Kleidung: 0.65, Schuhe: 0.70, Accessoires: 0.95, Schmuck: 1.05, Uhren: 0.95 }},
+  "Gucci": { tier: "A", hypeScore: 0.82, retentionRate: 0.55, categories: { Taschen: 0.90, Kleidung: 0.60, Schuhe: 0.65, Accessoires: 0.80, Schmuck: 0.88, Uhren: 0.81 }},
+  "Dior": { tier: "A", hypeScore: 0.88, retentionRate: 0.70, categories: { Taschen: 1.00, Kleidung: 0.72, Schuhe: 0.70, Accessoires: 0.90, Schmuck: 0.99, Uhren: 0.91 }},
+  "Prada": { tier: "A", hypeScore: 0.80, retentionRate: 0.58, categories: { Taschen: 0.88, Kleidung: 0.60, Schuhe: 0.68, Accessoires: 0.78, Schmuck: 0.86, Uhren: 0.79 }},
+  "Bottega Veneta": { tier: "A", hypeScore: 0.85, retentionRate: 0.65, categories: { Taschen: 0.95, Kleidung: 0.58, Schuhe: 0.62, Accessoires: 0.85, Schmuck: 0.94, Uhren: 0.86 }},
+  "Saint Laurent": { tier: "A", hypeScore: 0.78, retentionRate: 0.55, categories: { Taschen: 0.85, Kleidung: 0.62, Schuhe: 0.68, Accessoires: 0.75, Schmuck: 0.84, Uhren: 0.77 }},
+  "Celine": { tier: "A", hypeScore: 0.82, retentionRate: 0.62, categories: { Taschen: 0.92, Kleidung: 0.60, Schuhe: 0.58, Accessoires: 0.78, Schmuck: 0.91, Uhren: 0.83 }},
+  "Balenciaga": { tier: "A", hypeScore: 0.75, retentionRate: 0.48, categories: { Taschen: 0.78, Kleidung: 0.55, Schuhe: 0.72, Accessoires: 0.68, Schmuck: 0.76, Uhren: 0.70 }},
+  "Loewe": { tier: "A", hypeScore: 0.83, retentionRate: 0.60, categories: { Taschen: 0.90, Kleidung: 0.55, Schuhe: 0.55, Accessoires: 0.75, Schmuck: 0.89, Uhren: 0.81 }},
+  "Valentino": { tier: "A", hypeScore: 0.76, retentionRate: 0.52, categories: { Taschen: 0.80, Kleidung: 0.65, Schuhe: 0.72, Accessoires: 0.70, Schmuck: 0.79, Uhren: 0.72 }},
+  "Burberry": { tier: "B", hypeScore: 0.65, retentionRate: 0.42, categories: { Taschen: 0.68, Kleidung: 0.55, Schuhe: 0.50, Accessoires: 0.72, Schmuck: 0.67, Uhren: 0.61 }},
+  "Fendi": { tier: "B", hypeScore: 0.72, retentionRate: 0.50, categories: { Taschen: 0.82, Kleidung: 0.55, Schuhe: 0.58, Accessoires: 0.72, Schmuck: 0.81, Uhren: 0.74 }},
+  "Givenchy": { tier: "B", hypeScore: 0.62, retentionRate: 0.42, categories: { Taschen: 0.70, Kleidung: 0.55, Schuhe: 0.58, Accessoires: 0.62, Schmuck: 0.69, Uhren: 0.63 }},
+  "Miu Miu": { tier: "B", hypeScore: 0.78, retentionRate: 0.52, categories: { Taschen: 0.80, Kleidung: 0.60, Schuhe: 0.65, Accessoires: 0.72, Schmuck: 0.79, Uhren: 0.72 }},
+  "Versace": { tier: "B", hypeScore: 0.60, retentionRate: 0.38, categories: { Taschen: 0.62, Kleidung: 0.50, Schuhe: 0.52, Accessoires: 0.58, Schmuck: 0.61, Uhren: 0.56 }},
+  "Dolce & Gabbana": { tier: "B", hypeScore: 0.55, retentionRate: 0.35, categories: { Taschen: 0.58, Kleidung: 0.48, Schuhe: 0.50, Accessoires: 0.55, Schmuck: 0.57, Uhren: 0.52 }},
+  "Alexander McQueen": { tier: "B", hypeScore: 0.68, retentionRate: 0.45, categories: { Taschen: 0.65, Kleidung: 0.58, Schuhe: 0.72, Accessoires: 0.60, Schmuck: 0.64, Uhren: 0.59 }},
+  "Jacquemus": { tier: "B", hypeScore: 0.75, retentionRate: 0.48, categories: { Taschen: 0.78, Kleidung: 0.55, Schuhe: 0.50, Accessoires: 0.65, Schmuck: 0.77, Uhren: 0.70 }},
+  "The Row": { tier: "B", hypeScore: 0.80, retentionRate: 0.58, categories: { Taschen: 0.85, Kleidung: 0.65, Schuhe: 0.55, Accessoires: 0.72, Schmuck: 0.84, Uhren: 0.77 }},
+  "Brunello Cucinelli": { tier: "C", hypeScore: 0.60, retentionRate: 0.45, categories: { Taschen: 0.55, Kleidung: 0.62, Schuhe: 0.50, Accessoires: 0.58, Schmuck: 0.54, Uhren: 0.50 }},
+  "Jil Sander": { tier: "C", hypeScore: 0.58, retentionRate: 0.40, categories: { Taschen: 0.58, Kleidung: 0.55, Schuhe: 0.48, Accessoires: 0.52, Schmuck: 0.57, Uhren: 0.52 }},
+  "Acne Studios": { tier: "C", hypeScore: 0.55, retentionRate: 0.38, categories: { Taschen: 0.52, Kleidung: 0.50, Schuhe: 0.55, Accessoires: 0.58, Schmuck: 0.51, Uhren: 0.47 }},
+  "Maison Margiela": { tier: "C", hypeScore: 0.70, retentionRate: 0.48, categories: { Taschen: 0.68, Kleidung: 0.55, Schuhe: 0.72, Accessoires: 0.65, Schmuck: 0.67, Uhren: 0.61 }},
+  "Isabel Marant": { tier: "C", hypeScore: 0.50, retentionRate: 0.35, categories: { Taschen: 0.48, Kleidung: 0.48, Schuhe: 0.55, Accessoires: 0.45, Schmuck: 0.47, Uhren: 0.43 }},
+  "Stella McCartney": { tier: "C", hypeScore: 0.48, retentionRate: 0.32, categories: { Taschen: 0.50, Kleidung: 0.45, Schuhe: 0.42, Accessoires: 0.48, Schmuck: 0.49, Uhren: 0.45 }},
+  "Ami Paris": { tier: "C", hypeScore: 0.52, retentionRate: 0.35, categories: { Taschen: 0.48, Kleidung: 0.45, Schuhe: 0.42, Accessoires: 0.55, Schmuck: 0.51, Uhren: 0.46 }},
+  "Totême": { tier: "C", hypeScore: 0.50, retentionRate: 0.33, categories: { Taschen: 0.52, Kleidung: 0.48, Schuhe: 0.40, Accessoires: 0.45, Schmuck: 0.51, Uhren: 0.47 }},
+  "Max Mara": { tier: "C", hypeScore: 0.52, retentionRate: 0.38, categories: { Taschen: 0.48, Kleidung: 0.55, Schuhe: 0.42, Accessoires: 0.48, Schmuck: 0.53, Uhren: 0.48 }},
+};
+
+const CONDITIONS = [
+  { id: "pristine", label: "Pristine", subtitle: "Neuwertig", multiplier: 1.0, color: "#1a5c2a", description: "Keine Gebrauchsspuren, originalverpackt oder wie neu", vcMapping: "Ungetragen, mit Etikett" },
+  { id: "exzellent", label: "Exzellent", subtitle: "Sehr guter Zustand", multiplier: 0.88, color: "#2d7a3e", description: "Minimale Spuren, kaum sichtbar, top gepflegt", vcMapping: "Ungetragen / Sehr guter Zustand" },
+  { id: "charmant", label: "Charmant", subtitle: "Guter Zustand", multiplier: 0.74, color: "#d4a017", description: "Leichte Gebrauchsspuren, insgesamt gepflegt", vcMapping: "Guter Zustand" },
+  { id: "authentisch", label: "Authentisch", subtitle: "Sichtbare Gebrauchsspuren", multiplier: 0.58, color: "#c2601a", description: "Deutlich getragen, aber funktional einwandfrei", vcMapping: "Akzeptabler Zustand" },
+  { id: "charakter", label: "Charakter Piece", subtitle: "Deutliche Gebrauchsspuren", multiplier: 0.40, color: "#8b3a3a", description: "Starke Patina, Vintage-Charakter, Liebhaber", vcMapping: "Unter VC-Minimum" },
+];
+
+// ── Secondhand Market Price Ranges (actual resale prices, NOT retail) ──
+// Based on real market data: Bags retain 70-92%, Clothing only 30-40% of retail
+const CATEGORY_RESALE_RANGES = {
+  Taschen:     { S: [1500, 8000], A: [600, 2800], B: [250, 1200], C: [120, 600] },
+  Kleidung:    { S: [120, 1200],  A: [60, 600],   B: [35, 350],   C: [20, 180] },
+  Schuhe:      { S: [150, 1000],  A: [80, 550],   B: [40, 300],   C: [25, 180] },
+  Accessoires: { S: [80, 1500],   A: [40, 600],   B: [25, 300],   C: [15, 150] },
+  Schmuck:     { S: [200, 5000],  A: [80, 2000],  B: [40, 800],   C: [20, 400] },
+  Uhren:       { S: [1500, 12000],A: [500, 4000],  B: [200, 1800], C: [80, 600] },
+};
+
+const MATERIALS = {
+  Taschen: ["Leder", "Canvas", "Nylon", "Tweed", "Exotenleder", "Satin", "Denim", "Raffia"],
+  Kleidung: ["Seide", "Kaschmir", "Baumwolle", "Wolle", "Leinen", "Polyester", "Tweed", "Leder"],
+  Schuhe: ["Leder", "Wildleder", "Canvas", "Satin", "Gummi", "Stoff", "Lackleder", "Mesh"],
+  Accessoires: ["Leder", "Seide", "Metall", "Wolle", "Kaschmir", "Canvas", "Perlen", "Kristall"],
+  Schmuck: ["Gold", "Silber", "Platin", "Roségold", "Edelstahl", "Perlen", "Kristall", "Emaille"],
+  Uhren: ["Edelstahl", "Gold", "Roségold", "Platin", "Titan", "Keramik", "Leder (Band)", "Kautschuk (Band)"],
+};
+
+const MATERIAL_MULTIPLIERS = {
+  "Exotenleder": 1.35, "Gold": 1.40, "Platin": 1.50, "Roségold": 1.30,
+  "Kaschmir": 1.15, "Seide": 1.10, "Leder": 1.05, "Lackleder": 1.08,
+  "Tweed": 1.12, "Wildleder": 1.02, "Perlen": 1.20, "Kristall": 1.15,
+  "Titan": 1.25, "Keramik": 1.20, "Satin": 1.05, "Emaille": 1.10,
+  "Canvas": 0.90, "Nylon": 0.85, "Baumwolle": 0.88, "Polyester": 0.80,
+  "Gummi": 0.82, "Stoff": 0.85, "Mesh": 0.88, "Denim": 0.92,
+  "Wolle": 0.95, "Leinen": 0.92, "Raffia": 0.90, "Metall": 1.00,
+  "Edelstahl": 1.05, "Silber": 1.10, "Leder (Band)": 1.00, "Kautschuk (Band)": 0.95,
+};
+
+const COLORS = ["Schwarz", "Weiß", "Beige", "Braun", "Cognac", "Navy", "Grau", "Rot", "Rosa", "Blau", "Grün", "Gelb", "Orange", "Bordeaux", "Gold", "Silber", "Multicolor"];
+
+const COLOR_MULTIPLIERS = {
+  "Schwarz": 1.05, "Beige": 1.03, "Cognac": 1.02, "Braun": 1.00, "Navy": 1.02,
+  "Weiß": 0.98, "Grau": 0.97, "Gold": 1.04, "Silber": 1.01, "Bordeaux": 1.01,
+  "Rosa": 0.96, "Rot": 0.95, "Blau": 0.96, "Grün": 0.94, "Gelb": 0.92,
+  "Orange": 0.93, "Multicolor": 0.95,
+};
+
+const PATTERNS = ["Uni / Solid", "Monogram", "Logo Print", "Kariert", "Gestreift", "Floral", "Animal Print", "Abstrakt", "Camouflage", "Paisley"];
+
+const PATTERN_MULTIPLIERS = {
+  "Monogram": 1.12, "Logo Print": 1.05, "Uni / Solid": 1.00, "Kariert": 0.98,
+  "Gestreift": 0.97, "Floral": 0.96, "Animal Print": 0.95, "Abstrakt": 0.94,
+  "Camouflage": 0.90, "Paisley": 0.93,
+};
+
+const SUBCATEGORIES = {
+  Taschen: ["Handtasche", "Clutch", "Tote", "Crossbody", "Rucksack", "Wallet", "Bucket Bag", "Shopper"],
+  Kleidung: ["Kleid", "Blazer", "Mantel", "Jacke", "Bluse", "Pullover", "Hose", "Rock"],
+  Schuhe: ["Pumps", "Sneaker", "Boots", "Loafer", "Sandalen", "Slingbacks", "Ankle Boots", "Flats"],
+  Accessoires: ["Gürtel", "Schal", "Sonnenbrille", "Hut", "Handschuhe", "Tuch", "Haargummi", "Etui"],
+  Schmuck: ["Ring", "Armband", "Kette", "Ohrringe", "Brosche", "Anhänger", "Armreif", "Set"],
+  Uhren: ["Automatik", "Quarz", "Chronograph", "Taucheruhr", "Dress Watch", "Vintage", "Smart Watch", "Limited Edition"],
+};
+
+const PLATFORM_FEES = {
+  vinted: {
+    name: "Vinted",
+    sellerFee: 0,
+    buyerProtection: 0.05,
+    note: "Keine Verkäufergebühr",
+    calcNet: (price) => price,
+  },
+  ebay: {
+    name: "eBay",
+    sellerFee: 0.13,
+    paymentFee: 0.003,
+    note: "13% Provision + Zahlungsgebühr",
+    calcNet: (price) => Math.round(price * (1 - 0.13 - 0.003)),
+  },
+  vestiaire: {
+    name: "Vestiaire Collective",
+    sellerFee: 0.12,
+    paymentFee: 0.03,
+    note: "12% Verkaufsgebühr + 3% Zahlungsabwicklung",
+    calcNet: (price) => Math.round(price * (1 - 0.12 - 0.03)),
+  },
+};
+
+const FARFETCH_BRANDS = ["Hermès", "Chanel", "Louis Vuitton", "Gucci", "Dior", "Prada", "Bottega Veneta", "Saint Laurent", "Celine", "Balenciaga", "Loewe", "Valentino", "Burberry", "Fendi", "Givenchy", "Miu Miu", "Versace", "Dolce & Gabbana", "Alexander McQueen", "Stella McCartney"];
+
+function calculateFarfetchQuote(brand, priceMid, conditionMultiplier) {
+  if (!FARFETCH_BRANDS.includes(brand)) return null;
+  const baseQuote = priceMid * 0.50 * conditionMultiplier;
+  return {
+    low: Math.round(baseQuote * 0.85),
+    mid: Math.round(baseQuote),
+    high: Math.round(baseQuote * 1.15),
+    note: "Farfetch-Guthaben (kein Cash)",
+  };
+}
+
+// ── Vinted Brand IDs (scraped from Vinted API) ──
+const VINTED_BRAND_IDS = {
+  "Hermès": 4785, "Chanel": 481, "Louis Vuitton": 417, "Gucci": 567,
+  "Dior": 671, "Prada": 3573, "Bottega Veneta": 86972, "Saint Laurent": 377,
+  "Celine": 1443, "Balenciaga": 2369, "Loewe": 24209, "Valentino": 15450529,
+  "Burberry": 364, "Fendi": 1189, "Givenchy": 2371, "Miu Miu": 1745,
+  "Versace": 2293, "Dolce & Gabbana": 1043, "Alexander McQueen": 52193,
+  "Jacquemus": 168278, "The Row": 547584, "Brunello Cucinelli": 103740,
+  "Jil Sander": 17991, "Acne Studios": 180798, "Maison Margiela": 639289,
+  "Isabel Marant": 121, "Stella McCartney": 60498, "Ami Paris": 7228770,
+  "Totême": 546105, "Max Mara": 465,
+};
+
+// Build Vinted URL: use brand_ids filter + product search for precise results
+function vintedSearchUrl(brand, productQuery) {
+  const brandId = VINTED_BRAND_IDS[brand];
+  const searchText = productQuery || "";
+  if (brandId) {
+    return `https://www.vinted.de/catalog?search_text=${encodeURIComponent(searchText)}&brand_ids[]=${brandId}&order=relevance`;
+  }
+  // Fallback: text search with brand name
+  return `https://www.vinted.de/catalog?search_text=${encodeURIComponent(brand + " " + searchText)}&order=relevance`;
+}
+
+const PLATFORMS = {
+  vinted: { name: "Vinted", color: "#09B1BA", icon: "V", priceModifier: 0.92,
+    searchUrl: (q, brand) => vintedSearchUrl(brand || q, brand ? q.replace(brand, "").trim() : ""),
+    itemUrl: (q, i, brand) => vintedSearchUrl(brand || q, brand ? q.replace(brand, "").trim() : "") },
+  ebay: { name: "eBay", color: "#E53238", icon: "e", priceModifier: 1.0,
+    searchUrl: (q) => `https://www.ebay.de/sch/i.html?_nkw=${encodeURIComponent(q)}&_sacat=0&LH_PrefLoc=1`,
+    itemUrl: (q, i) => `https://www.ebay.de/sch/i.html?_nkw=${encodeURIComponent(q)}&_sacat=0&LH_PrefLoc=1` },
+  vestiaire: { name: "Vestiaire Collective", color: "#1A1A2E", icon: "VC", priceModifier: 1.12,
+    searchUrl: (q) => `https://de.vestiairecollective.com/search/?q=${encodeURIComponent(q)}`,
+    itemUrl: (q, i) => `https://de.vestiairecollective.com/search/?q=${encodeURIComponent(q)}` },
+};
+
+// ── Product Name Templates per Brand/Category ──
+const PRODUCT_NAMES = {
+  "Hermès": { Taschen: ["Birkin 30", "Kelly 28", "Constance 24", "Picotin Lock 18", "Garden Party 36", "Evelyne III 29", "Bolide 31", "Lindy 26"], Kleidung: ["Cashmere Cardigan", "Silk Blouse", "Twill Jacke", "Knit Pullover", "Riding Jacket"], Schuhe: ["Oran Sandalen", "Jumping Boots", "Eclair Sneaker", "Day Ankle Boot"], Accessoires: ["Clic H Armband", "Kelly Belt", "Twilly Seidentuch", "Carré 90 Schal", "Collier de Chien"], Schmuck: ["Collier de Chien Ring", "Chaîne d'Ancre Bracelet", "Kelly Bangle", "Echappée Earrings"], Uhren: ["Cape Cod", "Heure H", "Arceau", "Slim d'Hermès"] },
+  "Chanel": { Taschen: ["Classic Flap Medium", "Boy Bag", "2.55 Reissue", "Gabrielle Hobo", "19 Bag Large", "WOC Caviar", "Deauville Tote", "Mini Flap"], Kleidung: ["Tweed Blazer", "Bouclé Jacke", "Seiden-Bluse CC", "Cashmere Twinset", "Fantasy Tweed Kleid"], Schuhe: ["Slingback Pumps", "Ballet Flats CC", "Dad Sandals", "Ankle Boots Chain"], Accessoires: ["Brosche Camélia", "CC Ohrringe Perle", "Boy Belt", "Schal Seide CC", "Sonnenbrille Pilot"], Schmuck: ["Camélia Ring", "Coco Crush Armband", "Comète Ohrringe", "N°5 Kette"], Uhren: ["J12", "Première", "Boy·Friend", "Code Coco"] },
+  "Louis Vuitton": { Taschen: ["Neverfull MM", "Speedy 30 Mono", "Pochette Métis", "Alma BB", "Capucines MM", "Dauphine MM", "OnTheGo GM", "Twist PM"], Kleidung: ["Monogram Hoodie", "Damier Polo", "Silk Blouse LV", "Denim Jacket Mono"], Schuhe: ["Archlight Sneaker", "Star Trail Boots", "LV Trainer", "Run Away Sneaker"], Accessoires: ["Zippy Wallet Mono", "Bandoulière Strap", "Shawl Monogram", "Belt Initiales"], Schmuck: ["Monogram Ring", "LV Bracelet", "Chain Necklace", "Logo Earrings"], Uhren: ["Tambour", "Twist Quartz", "Horizon", "Escale"] },
+  "Gucci": { Taschen: ["GG Marmont Small", "Dionysus Medium", "Jackie 1961", "Bamboo 1947", "Ophidia GG Tote", "Horsebit 1955", "Blondie Medium"], Kleidung: ["GG Jacquard Blazer", "Flora Print Dress", "Web Stripe Polo", "Silk Pussy-Bow Blouse"], Schuhe: ["Horsebit Loafer", "Ace Sneaker", "Rhyton Trainer", "Princetown Mule"], Accessoires: ["GG Belt", "Interlocking G Kette", "Schal GG Wolle", "Sonnenbrille Aviator"], Schmuck: ["GG Marmont Ring", "Interlocking G Bracelet", "Icon Ring", "Logo Earrings"], Uhren: ["G-Timeless", "Grip", "GG2570", "Dive"] },
+  "Dior": { Taschen: ["Lady Dior Medium", "Saddle Bag", "Book Tote Medium", "30 Montaigne", "Bobby Medium", "Diorama Clutch", "Lady D-Lite"], Kleidung: ["Bar Jacket", "J'Adior Pullover", "Toile de Jouy Kleid", "Oblique Cardigan"], Schuhe: ["J'Adior Slingback", "Dior-ID Sneaker", "D-Connect Runner", "Naughtily-D Boot"], Accessoires: ["Diorquake Belt", "Tribales Ohrringe", "Mitzah Schal", "30 Montaigne Wallet"], Schmuck: ["Rose des Vents Ring", "Diorama Bracelet", "Tribales Earrings", "Diorissimo Necklace"], Uhren: ["Christal", "La D de Dior", "VIII Montaigne", "Grand Bal"] },
+  "Prada": { Taschen: ["Re-Edition 2005 Nylon", "Galleria Saffiano", "Cleo Brushed", "Symbole Bag", "Re-Nylon Backpack"], Kleidung: ["Re-Nylon Jacke", "Poplin Hemd Logo", "Cashmere V-Neck", "Technical Parka"], Schuhe: ["Monolith Boots", "Cloudbust Thunder", "Brushed Loafer", "Saffiano Sneaker"], Accessoires: ["Triangle Logo Belt", "Saffiano Wallet", "Symbole Ohrringe", "Re-Nylon Pouch"], Schmuck: ["Logo Ring", "Triangle Bracelet", "Prada Earrings", "Monogram Necklace"], Uhren: ["L'Homme", "Argento", "Luminor", "Quartz"] },
+  "Bottega Veneta": { Taschen: ["Cassette Bag", "Jodie Mini", "Arco Tote", "Pouch Clutch", "Andiamo Medium", "Sardine Bag"], Kleidung: ["Intrecciato Leather Jacket", "Cashmere Coat", "Knit Polo", "Cotton Shirt"], Schuhe: ["Puddle Boots", "Lido Sandals", "Tire Boots", "Stretch Mules"], Accessoires: ["Intrecciato Belt", "Triangle Wallet", "Knot Clutch Mini", "Woven Bracelet"], Schmuck: ["Intrecciato Ring", "Weave Bracelet", "Silver Earrings", "Chain Necklace"], Uhren: ["Maxi Intrecciato", "Volante", "Armband", "Quarz"] },
+  "Saint Laurent": { Taschen: ["Loulou Small", "Kate Medium", "Niki Medium", "Sac de Jour Nano", "Sunset Medium", "Manhattan Shoulder"], Kleidung: ["Le Smoking Blazer", "Silk Shirt Western", "Teddy Jacket", "Sequin Mini Dress"], Schuhe: ["Tribute Sandals", "Opyum Pumps", "Court Classic SL/06", "Lou Boots"], Accessoires: ["Cassandre Belt", "YSL Ohrringe", "Monogram Card Case", "Schal Seide Logo"], Schmuck: ["Cassandre Ring", "Monogram Bracelet", "YSL Earrings", "Logo Necklace"], Uhren: ["Muse", "Classique", "Damoiselle", "Suez"] },
+  "Celine": { Taschen: ["Luggage Nano", "Belt Bag Mini", "Triomphe Teen", "Ava Bag", "16 Bag Medium", "Cabas Phantom"], Kleidung: ["Oversized Blazer", "Triomphe Pullover", "Cotton Trench", "Cashmere Turtleneck"], Schuhe: ["Triomphe Loafer", "Margaret Boots", "CT-01 Sneaker", "Celine Block Sandal"], Accessoires: ["Triomphe Belt", "Maillon Chain", "Small Wallet Triomphe", "Celine Sonnenbrille"], Schmuck: ["Triomphe Ring", "Chain Bracelet", "Logo Earrings", "Pendant Necklace"], Uhren: ["C-Dric", "Matignon", "Constellation", "Maille"] },
+  "Balenciaga": { Taschen: ["City Bag Medium", "Le Cagole XS", "Hourglass Small", "Neo Classic City", "Monaco Medium"], Kleidung: ["Oversized Hoodie Logo", "Track Jacket", "Destroyed Denim", "Political Campaign Tee"], Schuhe: ["Triple S", "Track Runner", "Speed Trainer", "Runner Sneaker"], Accessoires: ["BB Belt", "Cash Wallet", "Plate Bracelet", "Dynasty Sonnenbrille"], Schmuck: ["BB Ring", "Logo Bracelet", "Metal Earrings", "Chain Necklace"], Uhren: ["Limited Edition", "Logo Watch", "Chronograph", "Dress Watch"] },
+  "Loewe": { Taschen: ["Puzzle Medium", "Hammock Small", "Gate Bag", "Flamenco Clutch", "Amazona 28", "Squeeze Bag"], Kleidung: ["Anagram Hoodie", "Cashmere Cardigan", "Silk Shirt Print", "Leather Jacket"], Schuhe: ["Toy Boots", "Flow Runner", "Campo Sneaker", "Buckle Mule"], Accessoires: ["Anagram Belt", "Small Zip Wallet", "Scarf Wool Logo", "Squeeze Cardholder"], Schmuck: ["Anagram Ring", "Logo Bracelet", "Leather Earrings", "Pendant Necklace"], Uhren: ["Heritage", "Element", "Chronograph", "Sport"] },
+  "Valentino": { Taschen: ["Rockstud Spike", "VLogo Small", "Roman Stud Tote", "Locò Shoulder", "One Stud Bag"], Kleidung: ["Crepe Couture Blazer", "VLogo Chain Dress", "Cashmere Knit", "Lace Blouse"], Schuhe: ["Rockstud Pumps 100mm", "Rockstud Flats", "VLogo Sneaker", "Tan-Go Platform"], Accessoires: ["Rockstud Belt", "VLogo Ohrringe", "Garavani Wallet", "Schal Seide VLogo"], Schmuck: ["Rockstud Ring", "VLogo Bracelet", "Stud Earrings", "Chain Necklace"], Uhren: ["Aquacolor", "Run Away", "Icon", "Valentino V"] },
+};
+
+// Generic fallback names
+const GENERIC_NAMES = {
+  Taschen: ["Shoulder Bag", "Tote Bag", "Crossbody Bag", "Mini Bag", "Clutch", "Hobo Bag", "Top Handle Bag", "Bucket Bag"],
+  Kleidung: ["Blazer", "Cashmere Pullover", "Seidenbluse", "Wollmantel", "Kleid", "Jacke", "Cardigan", "Rock"],
+  Schuhe: ["Pumps", "Sneaker", "Boots", "Loafer", "Sandalen", "Slingbacks", "Ankle Boots", "Flats"],
+  Accessoires: ["Gürtel", "Schal", "Ohrringe", "Wallet", "Sonnenbrille", "Armband", "Brosche", "Card Holder"],
+  Schmuck: ["Ring", "Armband", "Kette", "Ohrringe", "Brosche", "Anhänger", "Armreif", "Manschettenknöpfe"],
+  Uhren: ["Automatik", "Quarz", "Chronograph", "Taucheruhr", "Dress Watch", "Sport Watch", "Vintage Uhr", "Limited Edition"],
+};
+
+// ── Condition labels used in listings ──
+const LISTING_CONDITIONS = [
+  { label: "Neu mit Etikett", weight: 0.05 },
+  { label: "Neuwertig", weight: 0.15 },
+  { label: "Sehr guter Zustand", weight: 0.30 },
+  { label: "Guter Zustand", weight: 0.30 },
+  { label: "Akzeptabel", weight: 0.15 },
+  { label: "Mit Gebrauchsspuren", weight: 0.05 },
+];
+
+// ── Seeded random for stable results ──
+function seededRandom(seed) {
+  let s = seed;
+  return () => { s = (s * 16807 + 0) % 2147483647; return (s - 1) / 2147483646; };
+}
+
+// ── Build search query from inputs ──
+// Returns { base, enriched } — base for eBay (brand+product), enriched for VC/Vinted (adds material/color)
+function buildSearchQuery(brand, productName, category, material, color) {
+  const parts = [brand];
+  if (productName && productName.trim()) parts.push(productName.trim());
+  else {
+    const catHints = { Taschen: "Bag", Kleidung: "", Schuhe: "", Accessoires: "", Schmuck: "", Uhren: "" };
+    if (catHints[category]) parts.push(catHints[category]);
+  }
+  const base = parts.join(" ");
+  // Enriched query: add material + color for platforms that search descriptions (VC, Vinted)
+  const enrichedParts = [...parts];
+  if (material && material.trim()) enrichedParts.push(material.trim());
+  if (color && color.trim()) enrichedParts.push(color.trim());
+  const enriched = enrichedParts.join(" ");
+  return { base, enriched };
+}
+
+// ── Generate product listings ──
+function generateListings(brand, category, conditionId, basePrice, productName, material, color) {
+  const brandNames = PRODUCT_NAMES[brand]?.[category] || GENERIC_NAMES[category];
+  const seed = brand.length * 1000 + category.length * 100 + conditionId.length + (productName?.length || 0) * 10;
+  const rng = seededRandom(seed);
+  const listings = [];
+  const cities = ["Berlin", "Paris", "München", "Hamburg", "London", "Milano", "Wien", "Köln", "Frankfurt", "Amsterdam", "Lyon", "Zürich", "Bruxelles", "Madrid", "Stockholm"];
+  const daysAgo = [0, 1, 1, 2, 3, 3, 5, 7, 8, 10, 12, 14, 18, 21, 25, 30];
+
+  const { base: searchQuery, enriched: enrichedQuery } = buildSearchQuery(brand, productName, category, material, color);
+  const hasProductName = productName && productName.trim().length > 0;
+
+  const titleVariations = hasProductName ? [
+    `${brand} ${productName}`,
+    `${brand} ${productName} Set`,
+    `${brand} ${productName} - ${category === "Taschen" ? "Tasche" : category === "Schuhe" ? "Schuhe" : category === "Accessoires" ? "Accessoire" : category === "Schmuck" ? "Schmuck" : category === "Uhren" ? "Uhr" : "Kleidung"}`,
+    `${brand} ${productName} ${CONDITIONS.find(c => c.id === conditionId)?.subtitle || ""}`.trim(),
+    `${productName} von ${brand}`,
+    `Original ${brand} ${productName}`,
+    `${brand} ${productName} Authentic`,
+  ] : [];
+
+  Object.entries(PLATFORMS).forEach(([platformKey, platform]) => {
+    const count = Math.floor(rng() * 5) + 3;
+    for (let i = 0; i < count; i++) {
+      let title;
+      let matchScore;
+      if (hasProductName) {
+        if (i < 1) {
+          // One best match: exact product name
+          title = titleVariations[Math.floor(rng() * Math.min(3, titleVariations.length))];
+          matchScore = Math.round(72 + rng() * 16); // 72-88% — never above 88 for simulated
+        } else if (i < 3) {
+          // Good matches with variation
+          title = titleVariations[Math.floor(rng() * titleVariations.length)];
+          matchScore = Math.round(55 + rng() * 20); // 55-75%
+        } else {
+          // Same brand/category, different product
+          const nameIdx = Math.floor(rng() * brandNames.length);
+          title = `${brand} ${brandNames[nameIdx]}`;
+          matchScore = Math.round(30 + rng() * 25); // 30-55%
+        }
+      } else {
+        const nameIdx = Math.floor(rng() * brandNames.length);
+        title = `${brand} ${brandNames[nameIdx]}`;
+        matchScore = Math.round(35 + rng() * 35); // 35-70%
+      }
+
+      // Wide price variance to reflect real market spread (30% to 200% of base)
+      // Most listings cluster around 50-120%, with outliers on both sides
+      const r = rng();
+      const priceVariance = r < 0.15 ? (0.30 + rng() * 0.30) :  // 15% cheap outliers: 30-60%
+                            r < 0.70 ? (0.60 + rng() * 0.60) :  // 55% normal range: 60-120%
+                            r < 0.90 ? (1.10 + rng() * 0.50) :  // 20% above average: 110-160%
+                                       (1.50 + rng() * 0.50);   // 10% expensive outliers: 150-200%
+      const price = Math.round(basePrice * platform.priceModifier * priceVariance);
+      const condIdx = Math.floor(rng() * LISTING_CONDITIONS.length);
+      const cityIdx = Math.floor(rng() * cities.length);
+      const daysIdx = Math.floor(rng() * daysAgo.length);
+      const hue = ((brand.charCodeAt(0) * 7 + i * 47 + platformKey.length * 23) % 360);
+
+      listings.push({
+        id: `${platformKey}-${i}`,
+        platform: platformKey,
+        platformName: platform.name,
+        platformColor: platform.color,
+        platformIcon: platform.icon,
+        title,
+        price,
+        condition: LISTING_CONDITIONS[condIdx].label,
+        city: cities[cityIdx],
+        daysAgo: daysAgo[daysIdx],
+        matchScore,
+        size: category === "Kleidung" ? ["XS", "S", "M", "L", "XL"][Math.floor(rng() * 5)] :
+              category === "Schuhe" ? [36, 37, 38, 39, 40, 41, 42][Math.floor(rng() * 7)] : null,
+        imageHue: hue,
+        imageSat: 25 + Math.floor(rng() * 30),
+        imageLig: 75 + Math.floor(rng() * 15),
+        // VC and Vinted benefit from enriched queries (material/color in descriptions)
+        searchUrl: platformKey === "vestiaire" ? platform.searchUrl(enrichedQuery) :
+                   platform.searchUrl(searchQuery, brand),
+      });
+    }
+  });
+
+  return listings.sort((a, b) => b.matchScore - a.matchScore);
+}
+
+// ── Pricing Engine ──
+function calculatePrice(brand, category, conditionId, productName, material, color, pattern, hasReceipt) {
+  const brandData = BRAND_DATABASE[brand];
+  if (!brandData) return null;
+  const condition = CONDITIONS.find(c => c.id === conditionId);
+  if (!condition) return null;
+  const tier = brandData.tier;
+  const resaleRange = CATEGORY_RESALE_RANGES[category]?.[tier];
+  if (!resaleRange) return null;
+
+  // Use real secondhand market ranges directly
+  const [resaleLow, resaleHigh] = resaleRange;
+  const resaleMid = (resaleLow + resaleHigh) / 2;
+
+  // Brand-specific category strength adjusts within the range
+  const categoryMultiplier = brandData.categories[category] || 0.6;
+  // Normalize around 1.0 — a multiplier of 1.1 means slightly above-average for this category
+  const brandCategoryStrength = categoryMultiplier / 0.75; // 0.75 is rough midpoint of multipliers
+
+  // Apply condition directly to the resale midpoint
+  const conditionAdjusted = resaleMid * condition.multiplier * brandCategoryStrength;
+
+  // Material, Color, Pattern adjustments (subtle modifiers)
+  const materialMult = MATERIAL_MULTIPLIERS[material] || 1.0;
+  const colorMult = COLOR_MULTIPLIERS[color] || 1.0;
+  const patternMult = PATTERN_MULTIPLIERS[pattern] || 1.0;
+
+  const adjustedPrice = conditionAdjusted * materialMult * colorMult * patternMult;
+
+  // Receipt / proof of origin bonus
+  const receiptBonus = hasReceipt ? 1.07 : 1.0;
+
+  // Hype factor — small addition for highly sought-after brands
+  const hypeFactor = 1 + (brandData.hypeScore - 0.5) * 0.15;
+
+  const basePrice = adjustedPrice * receiptBonus * hypeFactor;
+
+  // Price range: ±20% to reflect real market spread
+  const priceLow = Math.round(basePrice * 0.80);
+  const priceHigh = Math.round(basePrice * 1.20);
+  const priceMid = Math.round(basePrice);
+  const retailMid = resaleMid; // for display purposes
+
+  const { base: searchQuery, enriched: enrichedQuery } = buildSearchQuery(brand, productName, category, material, color);
+
+  const platformPrices = {};
+  Object.entries(PLATFORMS).forEach(([key, platform]) => {
+    const modifier = platform.priceModifier;
+    const variance = (seededRandom(key.length * 100 + brand.length)() * 0.12 - 0.06);
+    // VC gets enriched query (material/color in description search), others get base query
+    const platformQuery = key === "vestiaire" ? enrichedQuery : searchQuery;
+    platformPrices[key] = {
+      low: Math.round(priceLow * modifier * (1 + variance)),
+      mid: Math.round(priceMid * modifier * (1 + variance)),
+      high: Math.round(priceHigh * modifier * (1 + variance)),
+      listings: Math.floor(seededRandom(key.length * 50 + brand.length)() * 5) + 3,
+      searchUrl: key === "vestiaire" ? platform.searchUrl(platformQuery) : platform.searchUrl(searchQuery, brand),
+    };
+  });
+
+  const dataAvailability = tier === "S" ? 0.95 : tier === "A" ? 0.82 : tier === "B" ? 0.68 : 0.50;
+  const confidence = Math.min(Math.round((dataAvailability * 0.5 + condition.multiplier * 0.3 + brandData.hypeScore * 0.2) * 100), 98);
+
+  const listings = generateListings(brand, category, conditionId, priceMid, productName, material, color);
+
+  const farfetchQuote = calculateFarfetchQuote(brand, priceMid, condition.multiplier);
+
+  const platformNetPrices = {};
+  Object.entries(PLATFORM_FEES).forEach(([key, feeData]) => {
+    platformNetPrices[key] = feeData.calcNet(platformPrices[key].mid);
+  });
+
+  return {
+    priceLow, priceMid, priceHigh, platformPrices, confidence, tier, hypeScore: brandData.hypeScore, retentionRate: brandData.retentionRate, conditionMultiplier: condition.multiplier, retailMid, listings, searchQuery, enrichedQuery,
+    materialMult, colorMult, patternMult, receiptBonus,
+    farfetchQuote,
+    platformNetPrices,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PRODUKTBESCHREIBUNG GENERATOR — Maison Ô Tone of Voice
+// Collectif Luxe · Pré-Désiré · Poetisch · Elegant
+// ═══════════════════════════════════════════════════════════════
+
+const KONDITION_TEXTE = {
+  pristine: "Wurde dieses Designer\u00A0Piece schon einmal ausgeführt? Jedenfalls sieht man es ihm nicht an\u00A0— es befindet sich in bester Kondition.",
+  exzellent: "Mit wenigen dezenten Zeichen eines ersten Lebens ist dieses Piece die richtige Wahl für eine weitere Reise.",
+  charmant: "Sanfte Spuren der Zeit verleihen diesem Piece seinen besonderen Charme und lassen es bereit für neue Geschichten erscheinen.",
+  authentisch: "Die Patina dieses Designer\u00A0Pieces ist wahrlich erkennbar, doch unterstreicht den Charakter. Gereift\u00A0— nicht gealtert.",
+  charakter: "Mit sichtbaren Zeichen eines ersten Lebens und kleinen Besonderheiten\u00A0— dieses Piece braucht noch etwas Zuwendung, um seine Geschichte in voller Schönheit zu entfalten.",
+};
+
+// Material-Beschreibungen (poetisch)
+const MATERIAL_POETISCH = {
+  "Leder": "aus edlem Leder gefertigt",
+  "Canvas": "in robustem Canvas ausgeführt",
+  "Nylon": "in technischem Nylon realisiert",
+  "Tweed": "in feinstem Tweed gewebt",
+  "Exotenleder": "aus kostbarem Exotenleder gefertigt",
+  "Satin": "in schimmerndem Satin gehalten",
+  "Denim": "in charaktervollem Denim ausgeführt",
+  "Raffia": "in natürlichem Raffia geflochten",
+  "Seide": "aus feinster Seide gefertigt",
+  "Kaschmir": "in luxuriösem Kaschmir gehalten",
+  "Baumwolle": "aus feiner Baumwolle gefertigt",
+  "Wolle": "in edler Wolle ausgeführt",
+  "Leinen": "in leichtem Leinen gehalten",
+  "Polyester": "in technischem Gewebe realisiert",
+  "Wildleder": "aus samtweichem Wildleder gefertigt",
+  "Lackleder": "in glänzendem Lackleder ausgeführt",
+  "Mesh": "in leichtem Mesh realisiert",
+  "Gold": "in kostbarem Gold gefasst",
+  "Silber": "in edlem Silber gearbeitet",
+  "Platin": "in erlesenem Platin gefasst",
+  "Roségold": "in warmem Roségold gehalten",
+  "Edelstahl": "in poliertem Edelstahl ausgeführt",
+  "Perlen": "mit schimmernden Perlen besetzt",
+  "Kristall": "mit funkelnden Kristallen verziert",
+  "Emaille": "mit kunstvoll aufgetragener Emaille veredelt",
+  "Titan": "in leichtem Titan gefertigt",
+  "Keramik": "in edler Keramik ausgeführt",
+  "Metall": "in feinem Metall gearbeitet",
+  "Leder (Band)": "mit einem Band aus edlem Leder",
+  "Kautschuk (Band)": "mit einem sportiven Kautschukband",
+  "Stoff": "in feinem Stoff gehalten",
+  "Gummi": "in robustem Material realisiert",
+};
+
+// Farb-Atmosphären (poetisch)
+const FARB_POETISCH = {
+  "Schwarz": "in tiefem Schwarz, das zeitlose Eleganz atmet",
+  "Weiß": "in reinem Weiß, das Leichtigkeit und Klarheit ausstrahlt",
+  "Beige": "in warmem Beige, das an stille Nachmittage erinnert",
+  "Braun": "in erdigem Braun, das Natürlichkeit und Wärme vereint",
+  "Cognac": "in sattem Cognac, das an edle Bibliotheken erinnert",
+  "Navy": "in tiefem Navy, das stille Autorität vermittelt",
+  "Grau": "in elegantem Grau, das Understatement in seiner feinsten Form ist",
+  "Rot": "in leuchtendem Rot, das Leidenschaft und Stärke verkörpert",
+  "Rosa": "in zartem Rosa, das feminine Anmut ausstrahlt",
+  "Blau": "in edlem Blau, das an weite Horizonte denken lässt",
+  "Grün": "in feinem Grün, das die Kraft der Natur in sich trägt",
+  "Gelb": "in strahlendem Gelb, das Lebensfreude versprüht",
+  "Orange": "in warmem Orange, das an goldene Sonnenuntergänge erinnert",
+  "Bordeaux": "in tiefem Bordeaux, das Noblesse und Reife ausstrahlt",
+  "Gold": "in schimmerndem Gold, das Opulenz und Raffinesse vereint",
+  "Silber": "in kühlem Silber, das moderne Eleganz verkörpert",
+  "Multicolor": "in einem lebendigen Farbenspiel, das jede Perspektive neu erzählt",
+};
+
+// Muster-Beschreibungen
+const MUSTER_POETISCH = {
+  "Monogram": "Das ikonische Monogram-Muster verleiht diesem Werk seine unverkennbare Signatur.",
+  "Logo Print": "Das markante Logo-Print zeichnet dieses Stück als Statement der Maison aus.",
+  "Uni / Solid": "",
+  "Kariert": "Das klassische Karomuster verleiht dem Werk britische Nonchalance.",
+  "Gestreift": "Feine Streifen durchziehen das Design und verleihen ihm eine zeitlose Dynamik.",
+  "Floral": "Ein florales Motiv entfaltet sich und lässt das Stück wie eine Hommage an die Natur erscheinen.",
+  "Animal Print": "Ein animalisches Muster verleiht diesem Werk einen Hauch von Wildheit und Stärke.",
+  "Abstrakt": "Ein abstraktes Design macht dieses Stück zu einem Kunstwerk für sich.",
+  "Camouflage": "Ein Camouflage-Motiv verbindet urbane Ästhetik mit unkonventionellem Charme.",
+  "Paisley": "Filigrane Paisley-Ornamente verleihen dem Werk eine orientalisch inspirierte Eleganz.",
+};
+
+// Kategorie-spezifische Beschreibungsteile
+const KATEGORIE_SILHOUETTE = {
+  Taschen: [
+    "Die klare Linienführung und die durchdachte Proportionierung machen dieses Werk zu einem zeitlosen Begleiter.",
+    "Form und Funktion verschmelzen in diesem Stück zu müheloser Eleganz.",
+    "Die harmonische Silhouette vereint Tragbarkeit mit unverwechselbarem Design.",
+  ],
+  Kleidung: [
+    "Der Schnitt fällt weich und schmeichelt der Silhouette mit müheloser Eleganz.",
+    "Die Proportionen dieses Werks sind meisterhaft aufeinander abgestimmt — ein Stück, das Haltung verleiht.",
+    "Die Linienführung folgt den Prinzipien der Haute Couture und vereint Komfort mit Raffinesse.",
+  ],
+  Schuhe: [
+    "Die Silhouette vereint Komfort und Ästhetik in einem meisterhaften Zusammenspiel.",
+    "Jedes Detail der Form wurde mit dem Blick für Perfektion gestaltet.",
+    "Die Linienführung dieses Werks verleiht jedem Schritt eine elegante Leichtigkeit.",
+  ],
+  Accessoires: [
+    "Ein Accessoire, das jedes Ensemble um eine Nuance der Raffinesse bereichert.",
+    "Dieses Stück ist mehr als ein Begleiter — es ist ein Statement stilvoller Individualität.",
+    "Feinste Verarbeitung und durchdachtes Design machen dieses Werk zu einem täglichen Luxus.",
+  ],
+  Schmuck: [
+    "Dieses Schmuckstück ruht elegant auf der Haut und fängt das Licht mit stiller Raffinesse.",
+    "Ein Werk der Juwelierkunst, das Tradition und zeitgenössische Eleganz vereint.",
+    "Jedes Detail zeugt von der Kunstfertigkeit der Maison und verleiht der Trägerin eine besondere Aura.",
+  ],
+  Uhren: [
+    "Am Handgelenk entfaltet dieses Werk seine stille Autorität — ein Zeitmesser von erlesener Schönheit.",
+    "Die Uhr verbindet mechanische Präzision mit ästhetischer Perfektion.",
+    "Ein Zeitmesser, der mehr ist als ein Instrument — ein Bekenntnis zu zeitloser Handwerkskunst.",
+  ],
+};
+
+// Besonderheiten (poetische Einzeiler)
+const BESONDERHEITEN = {
+  Taschen: [
+    "Ein Werk, das Geschichten sammelt und dabei selbst zur Geschichte wird\u00A0— für Reisende zwischen den Welten.",
+    "Mehr als eine Tasche\u00A0— ein stiller Begleiter für jene, die das Besondere nicht suchen müssen, weil es ihnen folgt.",
+    "Ein Stück, das die Essenz der Maison in sich trägt\u00A0— bereit, eine neue Reise zu beginnen.",
+  ],
+  Kleidung: [
+    "Ein Werk, das Stille trägt und dennoch spricht\u00A0— für jene, die Eleganz nicht suchen müssen, weil sie ihnen folgt.",
+    "Dieses Piece ist eine Einladung, sich selbst neu zu begegnen\u00A0— in einer Silhouette, die alles sagt, ohne zu viel zu verraten.",
+    "Getragen wie ein flüsterndes Versprechen\u00A0— dieses Werk wartet auf seine nächste Geschichte.",
+  ],
+  Schuhe: [
+    "Jeder Schritt wird zur Reise\u00A0— dieses Werk begleitet seinen Träger mit der Leichtigkeit wahrer Eleganz.",
+    "Ein Piece, das den Boden unter den Füßen zur Bühne macht\u00A0— bereit für seinen nächsten Auftritt.",
+    "Zwischen Himmel und Erde\u00A0— dieses Werk verbindet Bodenhaftung mit dem Gefühl, über allem zu schweben.",
+  ],
+  Accessoires: [
+    "Das gewisse Etwas, das aus einem Moment einen Auftritt macht\u00A0— ein Werk für Kennerinnen des leisen Luxus.",
+    "Ein Piece, das sich nicht aufdrängt, aber nie übersehen wird\u00A0— die Signatur der wahren Eleganz.",
+    "Dieses Werk ist der letzte Pinselstrich eines Meisterwerks\u00A0— das Detail, das alles vervollständigt.",
+  ],
+  Schmuck: [
+    "Ein Werk, das auf der Haut ruht wie ein Geheimnis\u00A0— sichtbar nur für jene, die genau hinsehen.",
+    "Mehr als Schmuck\u00A0— eine Erzählung in Gold und Licht, die mit jedem Tragen ein neues Kapitel beginnt.",
+    "Dieses Piece ist eine Liebeserklärung an das Detail\u00A0— für Sammlerinnen des Kostbaren.",
+  ],
+  Uhren: [
+    "Die Zeit steht still\u00A0— und doch tickt in diesem Werk das Herz einer großen Maison weiter.",
+    "Ein Zeitmesser für jene, die wissen, dass die schönsten Momente keiner Eile bedürfen.",
+    "Am Handgelenk ein stilles Versprechen\u00A0— dieses Werk misst nicht nur Zeit, es erzählt sie.",
+  ],
+};
+
+// Eröffnungssätze
+function buildEroeffnung(brand, category, subcategory, material) {
+  const categoryNamen = {
+    Taschen: subcategory || "Tasche",
+    Kleidung: subcategory || "Piece",
+    Schuhe: subcategory || "Schuh",
+    Accessoires: subcategory || "Accessoire",
+    Schmuck: subcategory || "Schmuckstück",
+    Uhren: subcategory || "Zeitmesser",
+  };
+  const werkTyp = categoryNamen[category] || "Werk";
+  const materialText = material && MATERIAL_POETISCH[material] ? `, ${MATERIAL_POETISCH[material]},` : "";
+
+  const varianten = [
+    `Dieses ${werkTyp} aus dem Hause ${brand} steht exemplarisch für die unverwechselbare Kunstfertigkeit der Maison.`,
+    `Aus der Welt von ${brand} entsprungen, vereint dieses ${werkTyp} die Essenz zeitloser Raffinesse.`,
+    `${brand} präsentiert mit diesem ${werkTyp} ein Werk von stiller Schönheit und erlesener Handwerkskunst.`,
+  ];
+  return varianten;
+}
+
+function generateProduktbeschreibung(brand, category, conditionId, productName, material, color, pattern, subcategory) {
+  if (!brand || !category) return null;
+
+  const seed = (brand.length * 137 + category.length * 53 + (productName?.length || 0) * 29 + (material?.length || 0) * 17);
+  const rng = seededRandom(seed);
+  const pick = (arr) => arr[Math.floor(rng() * arr.length)];
+
+  // TITEL
+  const werkTypMap = { Taschen: "Tasche", Kleidung: "Piece", Schuhe: "Schuhe", Accessoires: "Accessoire", Schmuck: "Schmuck", Uhren: "Uhr" };
+  const werkTyp = subcategory || werkTypMap[category] || "Piece";
+  const farbTitel = color ? `${color} ` : "";
+  const titel = productName
+    ? `${brand} ${productName} Pré-Désiré`
+    : `${farbTitel}${werkTyp} von ${brand} Pré-Désiré`;
+
+  // BESCHREIBUNG (3-4 Sätze)
+  const eroeffnungen = buildEroeffnung(brand, category, subcategory, material);
+  const satz1 = pick(eroeffnungen);
+
+  // Satz 2: Material + Farbe
+  let satz2 = "";
+  const materialText = material && MATERIAL_POETISCH[material] ? MATERIAL_POETISCH[material] : "";
+  const farbText = color && FARB_POETISCH[color] ? FARB_POETISCH[color] : "";
+
+  if (materialText && farbText) {
+    satz2 = `${materialText.charAt(0).toUpperCase() + materialText.slice(1)}, entfaltet sich das Design ${farbText}.`;
+  } else if (materialText) {
+    satz2 = `${materialText.charAt(0).toUpperCase() + materialText.slice(1)}, entfaltet dieses Werk seine besondere Anziehungskraft.`;
+  } else if (farbText) {
+    satz2 = `Gehalten ${farbText}, entfaltet dieses Werk seine stille Anziehungskraft.`;
+  } else {
+    satz2 = "Die edle Verarbeitung und das zeitlose Design sprechen für sich.";
+  }
+
+  // Satz 3: Silhouette / Kategorie
+  const satz3 = pick(KATEGORIE_SILHOUETTE[category] || KATEGORIE_SILHOUETTE.Kleidung);
+
+  // Satz 4: Muster (optional) + Kondition
+  let satz4 = "";
+  const musterText = pattern && MUSTER_POETISCH[pattern] ? MUSTER_POETISCH[pattern] : "";
+  if (musterText) {
+    satz4 = musterText + " ";
+  }
+
+  // Kondition
+  const konditionText = conditionId && KONDITION_TEXTE[conditionId] ? KONDITION_TEXTE[conditionId] : "";
+
+  const beschreibung = [satz1, satz2, satz3, satz4 ? satz4 : null].filter(Boolean).join(" ").trim();
+
+  // BESONDERHEIT
+  const besonderheit = pick(BESONDERHEITEN[category] || BESONDERHEITEN.Kleidung);
+
+  return {
+    titel,
+    beschreibung: beschreibung + (konditionText ? "\n\n" + konditionText : ""),
+    besonderheit,
+  };
+}
+
+// ── Sparkline ──
+function MiniChart({ data, color, width = 120, height = 36 }) {
+  const svgRef = useRef(null);
+  useEffect(() => {
+    if (!svgRef.current || !data?.length) return;
+    const svg = d3.select(svgRef.current);
+    svg.selectAll("*").remove();
+    const x = d3.scaleLinear().domain([0, data.length - 1]).range([4, width - 4]);
+    const y = d3.scaleLinear().domain([d3.min(data) * 0.95, d3.max(data) * 1.05]).range([height - 4, 4]);
+    svg.append("path").datum(data).attr("d", d3.area().x((d, i) => x(i)).y0(height).y1(d => y(d)).curve(d3.curveMonotoneX)).attr("fill", color).attr("opacity", 0.1);
+    svg.append("path").datum(data).attr("d", d3.line().x((d, i) => x(i)).y(d => y(d)).curve(d3.curveMonotoneX)).attr("fill", "none").attr("stroke", color).attr("stroke-width", 1.5);
+    svg.append("circle").attr("cx", x(data.length - 1)).attr("cy", y(data[data.length - 1])).attr("r", 2.5).attr("fill", color);
+  }, [data, color, width, height]);
+  return <svg ref={svgRef} width={width} height={height} />;
+}
+
+// ── Product Card Component ──
+function ProductCard({ listing, recommendedPrice }) {
+  const priceDiff = ((listing.price - recommendedPrice) / recommendedPrice * 100).toFixed(0);
+  const isAbove = listing.price > recommendedPrice;
+  const isClose = Math.abs(priceDiff) < 10;
+
+  return (
+    <div style={{ background: "#FFF", borderRadius: "12px", border: "1px solid #E8E6E3", overflow: "hidden", transition: "box-shadow 0.2s, transform 0.2s", cursor: "default" }}
+      onMouseEnter={e => { e.currentTarget.style.boxShadow = "0 4px 20px rgba(0,0,0,0.08)"; e.currentTarget.style.transform = "translateY(-2px)"; }}
+      onMouseLeave={e => { e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.transform = "translateY(0)"; }}>
+      <div style={{ height: "140px", background: `hsl(${listing.imageHue}, ${listing.imageSat}%, ${listing.imageLig}%)`, position: "relative", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ fontSize: "36px", opacity: 0.3 }}>
+          {listing.title.includes("Tasch") || listing.title.includes("Bag") || listing.title.includes("Tote") || listing.title.includes("Clutch") || listing.title.includes("Flap") || listing.title.includes("Birkin") || listing.title.includes("Kelly") || listing.title.includes("Speedy") || listing.title.includes("Marmont") || listing.title.includes("Saddle") || listing.title.includes("Puzzle") || listing.title.includes("Loulou") || listing.title.includes("Luggage") || listing.title.includes("City") || listing.title.includes("Jodie") || listing.title.includes("Cassette") ? "👜" :
+           listing.title.includes("Boot") || listing.title.includes("Pump") || listing.title.includes("Sneaker") || listing.title.includes("Loafer") || listing.title.includes("Sandal") || listing.title.includes("Flat") || listing.title.includes("Mule") || listing.title.includes("Sling") || listing.title.includes("Runner") ? "👠" :
+           listing.title.includes("Ring") || listing.title.includes("Armband") || listing.title.includes("Kette") || listing.title.includes("Ohrring") || listing.title.includes("Uhren") || listing.title.includes("Uhr") ? "💎" :
+           listing.title.includes("Belt") || listing.title.includes("Gürtel") || listing.title.includes("Wallet") || listing.title.includes("Schal") || listing.title.includes("Scarf") || listing.title.includes("Ohr") || listing.title.includes("Brille") || listing.title.includes("Brosche") ? "✨" : "👗"}
+        </div>
+        <div style={{ position: "absolute", top: "8px", left: "8px", background: listing.platformColor, color: "#FFF", fontSize: "10px", fontWeight: 700, padding: "3px 8px", borderRadius: "6px", letterSpacing: "0.5px" }}>
+          {listing.platformName}
+        </div>
+        <div style={{ position: "absolute", top: "8px", right: "8px", background: listing.matchScore > 85 ? "#16a34a" : listing.matchScore > 70 ? "#ca8a04" : "#dc2626", color: "#FFF", fontSize: "10px", fontWeight: 700, padding: "3px 8px", borderRadius: "6px" }}>
+          {listing.matchScore}% Match
+        </div>
+      </div>
+
+      <div style={{ padding: "14px" }}>
+        <div style={{ fontSize: "13px", fontWeight: 600, color: "#1A1A2E", marginBottom: "6px", lineHeight: 1.3, minHeight: "34px" }}>
+          {listing.title}
+        </div>
+
+        <div style={{ display: "flex", alignItems: "baseline", gap: "8px", marginBottom: "8px" }}>
+          <span style={{ fontSize: "20px", fontWeight: 700, color: "#1A1A2E" }}>
+            {listing.price.toLocaleString("de-DE")} €
+          </span>
+          <span style={{ fontSize: "11px", fontWeight: 600, color: isClose ? "#16a34a" : isAbove ? "#dc2626" : "#2563eb", background: isClose ? "#dcfce7" : isAbove ? "#fef2f2" : "#eff6ff", padding: "2px 6px", borderRadius: "4px" }}>
+            {isAbove ? "+" : ""}{priceDiff}%
+          </span>
+        </div>
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginBottom: "8px" }}>
+          <span style={{ fontSize: "10px", background: "#F3F2F0", color: "#666", padding: "2px 7px", borderRadius: "4px" }}>
+            {listing.condition}
+          </span>
+          {listing.size && (
+            <span style={{ fontSize: "10px", background: "#F3F2F0", color: "#666", padding: "2px 7px", borderRadius: "4px" }}>
+              Gr. {listing.size}
+            </span>
+          )}
+        </div>
+
+        <div style={{ fontSize: "11px", color: "#AAA", display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
+          <span>{listing.city}</span>
+          <span>{listing.daysAgo === 0 ? "Heute" : listing.daysAgo === 1 ? "Gestern" : `Vor ${listing.daysAgo} Tagen`}</span>
+        </div>
+
+        <a href={listing.searchUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
+          style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "5px", padding: "7px 10px", borderRadius: "6px", background: listing.platformColor, color: "#FFF", fontSize: "11px", fontWeight: 600, textDecoration: "none", transition: "opacity 0.2s" }}
+          onMouseEnter={e => e.currentTarget.style.opacity = "0.85"} onMouseLeave={e => e.currentTarget.style.opacity = "1"}>
+          <span style={{ fontSize: "9px" }}>&#x2197;</span> Auf {listing.platformName} ansehen
+        </a>
+      </div>
+    </div>
+  );
+}
+
+// ── Main App ──
+function MaisonOPricing() {
+  const [brand, setBrand] = useState("");
+  const [category, setCategory] = useState("");
+  const [condition, setCondition] = useState("");
+  const [productName, setProductName] = useState("");
+  const [material, setMaterial] = useState("");
+  const [color, setColor] = useState("");
+  const [pattern, setPattern] = useState("");
+  const [hasReceipt, setHasReceipt] = useState(false);
+  const [subcategory, setSubcategory] = useState("");
+  const [result, setResult] = useState(null);
+  const [isCalculating, setIsCalculating] = useState(false);
+  const [brandSuggestions, setBrandSuggestions] = useState([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [activeTab, setActiveTab] = useState("products");
+  const [searchHistory, setSearchHistory] = useState([]);
+  const [platformFilter, setPlatformFilter] = useState("all");
+  const [sortBy, setSortBy] = useState("match");
+  const [selectedListing, setSelectedListing] = useState(null);
+  const [liveData, setLiveData] = useState(null);
+  const [liveDataLoading, setLiveDataLoading] = useState(false);
+  const [useRealData, setUseRealData] = useState(false);
+
+  // Produktbeschreibung state
+  const [productImage, setProductImage] = useState(null);
+  const [productImagePreview, setProductImagePreview] = useState(null);
+  const [generatedText, setGeneratedText] = useState(null);
+  const [editTitel, setEditTitel] = useState("");
+  const [editBeschreibung, setEditBeschreibung] = useState("");
+  const [editBesonderheit, setEditBesonderheit] = useState("");
+  const [copySuccess, setCopySuccess] = useState("");
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef(null);
+
+  const allBrands = Object.keys(BRAND_DATABASE).sort();
+  const categories = ["Taschen", "Kleidung", "Schuhe", "Accessoires", "Schmuck", "Uhren"];
+
+  useEffect(() => {
+    setSubcategory("");
+    setMaterial("");
+    setColor("");
+    setPattern("");
+  }, [category]);
+
+  const handleBrandInput = (v) => { setBrand(v); if (v.length > 0) { setBrandSuggestions(allBrands.filter(b => b.toLowerCase().includes(v.toLowerCase()))); setShowSuggestions(true); } else setShowSuggestions(false); };
+
+  const handleCalculate = useCallback(() => {
+    if (!brand || !category || !condition) return;
+    setIsCalculating(true);
+    setResult(null);
+    setSelectedListing(null);
+    setLiveDataLoading(true);
+    setUseRealData(false);
+
+    setTimeout(() => {
+      const pricing = calculatePrice(brand, category, condition, productName, material, color, pattern, hasReceipt);
+      setResult(pricing);
+      setIsCalculating(false);
+      setActiveTab("products");
+      setPlatformFilter("all");
+
+      if (pricing) {
+        setSearchHistory(prev => [
+          {
+            brand,
+            category,
+            condition,
+            productName,
+            price: pricing.priceMid,
+            timestamp: new Date().toLocaleTimeString("de-DE")
+          },
+          ...prev
+        ].slice(0, 10));
+      }
+
+      // Fetch real listings in background
+      if (productName && productName.trim()) {
+        fetchRealListings(brand, category, productName, material, color)
+          .then(realData => {
+            if (realData && realData.vinted && realData.vinted.listings && realData.vinted.listings.length > 0) {
+              setLiveData(realData);
+              setUseRealData(true);
+            }
+            setLiveDataLoading(false);
+          })
+          .catch(err => {
+            console.error('Real data fetch failed:', err);
+            setLiveDataLoading(false);
+          });
+      } else {
+        setLiveDataLoading(false);
+      }
+    }, 1200);
+  }, [brand, category, condition, productName, material, color, pattern, hasReceipt]);
+
+  // Image upload handlers
+  const handleImageUpload = useCallback((file) => {
+    if (!file || !file.type.startsWith("image/")) return;
+    setProductImage(file);
+    const reader = new FileReader();
+    reader.onload = (e) => setProductImagePreview(e.target.result);
+    reader.readAsDataURL(file);
+  }, []);
+
+  const handleDrop = useCallback((e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files[0];
+    handleImageUpload(file);
+  }, [handleImageUpload]);
+
+  const handleDragOver = useCallback((e) => { e.preventDefault(); setIsDragging(true); }, []);
+  const handleDragLeave = useCallback(() => setIsDragging(false), []);
+
+  const removeImage = useCallback(() => {
+    setProductImage(null);
+    setProductImagePreview(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, []);
+
+  // Generate description
+  const handleGenerateDescription = useCallback(() => {
+    const desc = generateProduktbeschreibung(brand, category, condition, productName, material, color, pattern, subcategory);
+    if (desc) {
+      setGeneratedText(desc);
+      setEditTitel(desc.titel);
+      setEditBeschreibung(desc.beschreibung);
+      setEditBesonderheit(desc.besonderheit);
+    }
+  }, [brand, category, condition, productName, material, color, pattern, subcategory]);
+
+  // Copy to clipboard (Shopify format)
+  const handleCopyShopify = useCallback(() => {
+    const shopifyText = `${editTitel}\n\n${editBeschreibung}\n\nBesonderheit:\n${editBesonderheit}`;
+    navigator.clipboard.writeText(shopifyText).then(() => {
+      setCopySuccess("Kopiert!");
+      setTimeout(() => setCopySuccess(""), 2000);
+    }).catch(() => {
+      setCopySuccess("Fehler beim Kopieren");
+      setTimeout(() => setCopySuccess(""), 2000);
+    });
+  }, [editTitel, editBeschreibung, editBesonderheit]);
+
+  // Copy HTML for Shopify
+  const handleCopyShopifyHTML = useCallback(() => {
+    const html = `<h2>${editTitel}</h2>\n<p>${editBeschreibung.replace(/\n\n/g, "</p>\n<p>").replace(/\n/g, "<br>")}</p>\n<p><strong>Besonderheit:</strong><br>${editBesonderheit}</p>`;
+    navigator.clipboard.writeText(html).then(() => {
+      setCopySuccess("HTML kopiert!");
+      setTimeout(() => setCopySuccess(""), 2000);
+    }).catch(() => {
+      setCopySuccess("Fehler beim Kopieren");
+      setTimeout(() => setCopySuccess(""), 2000);
+    });
+  }, [editTitel, editBeschreibung, editBesonderheit]);
+
+  const conditionObj = CONDITIONS.find(c => c.id === condition);
+
+  const filteredListings = useMemo(() => {
+    if (!result?.listings) return [];
+    let list = result.listings;
+    if (platformFilter !== "all") list = list.filter(l => l.platform === platformFilter);
+    if (sortBy === "match") list = [...list].sort((a, b) => b.matchScore - a.matchScore);
+    else if (sortBy === "price_asc") list = [...list].sort((a, b) => a.price - b.price);
+    else if (sortBy === "price_desc") list = [...list].sort((a, b) => b.price - a.price);
+    else if (sortBy === "date") list = [...list].sort((a, b) => a.daysAgo - b.daysAgo);
+    return list;
+  }, [result, platformFilter, sortBy]);
+
+  const generateTrend = (base) => { const p = []; let v = base; const rng = seededRandom(base); for (let i = 0; i < 12; i++) { v = v + (rng() - 0.48) * base * 0.04; p.push(Math.round(v)); } return p; };
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#FAF9F7", fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif" }}>
+      {/* Header */}
+      <div style={{ background: "#1A1A2E", borderBottom: "3px solid #C8FF00", padding: "16px 32px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+          <div style={{ fontSize: "24px", fontWeight: 700, color: "#FFF" }}>MAISON <span style={{ color: "#C8FF00" }}>Ô</span></div>
+          <div style={{ height: "24px", width: "1px", background: "#444" }} />
+          <div style={{ color: "#888", fontSize: "12px", letterSpacing: "2px", textTransform: "uppercase" }}>Pricing Intelligence & Produkttext</div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <div style={{ width: "7px", height: "7px", borderRadius: "50%", background: "#4ADE80", boxShadow: "0 0 8px #4ADE8088" }} />
+          <span style={{ color: "#777", fontSize: "11px" }}>Live Market Data</span>
+        </div>
+      </div>
+
+      <div style={{ maxWidth: "1280px", margin: "0 auto", padding: "28px 24px" }}>
+        {/* Input */}
+        <div style={{ background: "#FFF", borderRadius: "14px", padding: "24px 28px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)", border: "1px solid #E8E6E3", marginBottom: "20px" }}>
+          <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "2.5px", color: "#999", marginBottom: "16px", fontWeight: 600 }}>Produkt eingeben</div>
+
+          {/* Row 1: Brand + Product Name */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginBottom: "16px" }}>
+            <div style={{ position: "relative" }}>
+              <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#555", marginBottom: "5px", textTransform: "uppercase", letterSpacing: "1px" }}>Marke</label>
+              <input type="text" value={brand} onChange={e => handleBrandInput(e.target.value)} onFocus={() => brand.length > 0 && setShowSuggestions(true)} onBlur={() => setTimeout(() => setShowSuggestions(false), 200)} placeholder="z.B. Chanel, Gucci, Hermès..." style={{ width: "100%", padding: "10px 14px", borderRadius: "8px", border: "1.5px solid #E0DDD8", fontSize: "14px", outline: "none", background: "#FAFAF8", boxSizing: "border-box" }} />
+              {showSuggestions && brandSuggestions.length > 0 && (
+                <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#FFF", border: "1px solid #E0DDD8", borderRadius: "8px", marginTop: "3px", maxHeight: "180px", overflowY: "auto", zIndex: 50, boxShadow: "0 8px 20px rgba(0,0,0,0.1)" }}>
+                  {brandSuggestions.map(b => (
+                    <div key={b} onClick={() => { setBrand(b); setShowSuggestions(false); }} style={{ padding: "8px 14px", cursor: "pointer", fontSize: "13px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #F5F5F5" }}
+                      onMouseEnter={e => e.currentTarget.style.background = "#F8F7F5"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                      <span style={{ fontWeight: 500 }}>{b}</span>
+                      <span style={{ fontSize: "10px", color: "#999", background: "#F0F0F0", padding: "2px 6px", borderRadius: "4px" }}>Tier {BRAND_DATABASE[b].tier}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#555", marginBottom: "5px", textTransform: "uppercase", letterSpacing: "1px" }}>Produktname / Linie / Modell</label>
+              <input type="text" value={productName} onChange={e => setProductName(e.target.value)} placeholder="z.B. Identification Set, Classic Flap, Bamboo 1947..." style={{ width: "100%", padding: "10px 14px", borderRadius: "8px", border: "1.5px solid #E0DDD8", fontSize: "14px", outline: "none", background: "#FAFAF8", boxSizing: "border-box" }} />
+            </div>
+          </div>
+
+          {/* Row 2: Category + Subcategory */}
+          <div style={{ marginBottom: "16px" }}>
+            <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#555", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "1px" }}>Kategorie</label>
+            <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
+              {categories.map(cat => (
+                <button key={cat} onClick={() => setCategory(cat)} style={{ flex: 1, padding: "10px 12px", borderRadius: "8px", border: category === cat ? "2px solid #1A1A2E" : "1.5px solid #E0DDD8", background: category === cat ? "#1A1A2E" : "#FAFAF8", color: category === cat ? "#C8FF00" : "#555", fontSize: "13px", fontWeight: 600, cursor: "pointer", transition: "all 0.2s", display: "flex", flexDirection: "column", alignItems: "center", gap: "2px" }}>
+                  <span style={{ fontSize: "18px" }}>{cat === "Taschen" ? "👜" : cat === "Kleidung" ? "👗" : cat === "Schuhe" ? "👠" : cat === "Schmuck" ? "💎" : cat === "Uhren" ? "⌚" : "✨"}</span>
+                  {cat}
+                </button>
+              ))}
+            </div>
+            {category && SUBCATEGORIES[category] && (
+              <select value={subcategory} onChange={e => setSubcategory(e.target.value)} style={{ width: "100%", padding: "10px 14px", borderRadius: "8px", border: "1.5px solid #E0DDD8", fontSize: "14px", outline: "none", background: "#FAFAF8", boxSizing: "border-box", color: subcategory ? "#1A1A2E" : "#AAA" }}>
+                <option value="">— Unterkategorie (optional)</option>
+                {SUBCATEGORIES[category].map(sub => (
+                  <option key={sub} value={sub}>{sub}</option>
+                ))}
+              </select>
+            )}
+          </div>
+
+          {/* Row 3: Material, Color, Pattern */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "16px", marginBottom: "16px" }}>
+            <div>
+              <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#555", marginBottom: "5px", textTransform: "uppercase", letterSpacing: "1px" }}>Material</label>
+              <select value={material} onChange={e => setMaterial(e.target.value)} style={{ width: "100%", padding: "10px 14px", borderRadius: "8px", border: "1.5px solid #E0DDD8", fontSize: "14px", outline: "none", background: "#FAFAF8", boxSizing: "border-box", color: material ? "#1A1A2E" : "#AAA" }}>
+                <option value="">Auswählen...</option>
+                {category && MATERIALS[category] ? MATERIALS[category].map(m => (
+                  <option key={m} value={m}>{m}</option>
+                )) : null}
+              </select>
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#555", marginBottom: "5px", textTransform: "uppercase", letterSpacing: "1px" }}>Farbe</label>
+              <select value={color} onChange={e => setColor(e.target.value)} style={{ width: "100%", padding: "10px 14px", borderRadius: "8px", border: "1.5px solid #E0DDD8", fontSize: "14px", outline: "none", background: "#FAFAF8", boxSizing: "border-box", color: color ? "#1A1A2E" : "#AAA" }}>
+                <option value="">Auswählen...</option>
+                {COLORS.map(c => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#555", marginBottom: "5px", textTransform: "uppercase", letterSpacing: "1px" }}>Muster</label>
+              <select value={pattern} onChange={e => setPattern(e.target.value)} style={{ width: "100%", padding: "10px 14px", borderRadius: "8px", border: "1.5px solid #E0DDD8", fontSize: "14px", outline: "none", background: "#FAFAF8", boxSizing: "border-box", color: pattern ? "#1A1A2E" : "#AAA" }}>
+                <option value="">Auswählen...</option>
+                {PATTERNS.map(p => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Row 4: Condition */}
+          <div style={{ marginBottom: "16px" }}>
+            <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#555", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "1px" }}>Zustand</label>
+            <div style={{ display: "flex", gap: "6px" }}>
+              {CONDITIONS.map(c => (
+                <button key={c.id} onClick={() => setCondition(c.id)} style={{ flex: 1, padding: "10px 6px", borderRadius: "8px", border: condition === c.id ? `2px solid ${c.color}` : "1.5px solid #E0DDD8", background: condition === c.id ? `${c.color}12` : "#FAFAF8", color: condition === c.id ? c.color : "#777", fontSize: "11px", fontWeight: 600, cursor: "pointer", transition: "all 0.2s", display: "flex", flexDirection: "column", alignItems: "center", gap: "1px", textAlign: "center" }}>
+                  <span style={{ fontSize: "12px", fontWeight: 700 }}>{c.label}</span>
+                  <span style={{ fontSize: "9px", opacity: 0.7 }}>{c.subtitle}</span>
+                  <span style={{ fontSize: "9px", marginTop: "1px", opacity: 0.5 }}>{Math.round(c.multiplier * 100)}%</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Row 5: Receipt Toggle + Calculate */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px", marginBottom: "16px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
+                <div onClick={() => setHasReceipt(!hasReceipt)} style={{
+                  width: "40px", height: "22px", borderRadius: "11px",
+                  background: hasReceipt ? "#C8FF00" : "#E0DDD8",
+                  position: "relative", transition: "all 0.2s", cursor: "pointer"
+                }}>
+                  <div style={{
+                    width: "18px", height: "18px", borderRadius: "50%",
+                    background: "#FFF", position: "absolute", top: "2px",
+                    left: hasReceipt ? "20px" : "2px", transition: "all 0.2s",
+                    boxShadow: "0 1px 3px rgba(0,0,0,0.2)"
+                  }} />
+                </div>
+                <span style={{ fontSize: "12px", fontWeight: 600, color: "#555" }}>Originalrechnung / Etikett vorhanden</span>
+                {hasReceipt && <span style={{ fontSize: "10px", color: "#16a34a", fontWeight: 600 }}>+7% Wertaufschlag</span>}
+              </label>
+            </div>
+            <button onClick={handleCalculate} disabled={!brand || !category || !condition || isCalculating} style={{ padding: "12px 32px", borderRadius: "10px", border: "none", background: (!brand || !category || !condition) ? "#CCC" : "#1A1A2E", color: (!brand || !category || !condition) ? "#888" : "#C8FF00", fontSize: "15px", fontWeight: 700, cursor: (!brand || !category || !condition) ? "not-allowed" : "pointer", letterSpacing: "0.5px", transition: "all 0.3s", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", whiteSpace: "nowrap" }}>
+              {isCalculating ? (<><span style={{ display: "inline-block", width: "16px", height: "16px", border: "2.5px solid #C8FF0044", borderTopColor: "#C8FF00", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />Analysiere...</>) : "Marktpreis berechnen"}
+            </button>
+          </div>
+        </div>
+
+        {/* Results */}
+        {result && (
+          <div style={{ animation: "fadeIn 0.5s ease-out" }}>
+            {/* Price Banner */}
+            <div style={{ background: "#1A1A2E", borderRadius: "14px", padding: "24px 28px", marginBottom: "16px", color: "#FFF", position: "relative", overflow: "hidden" }}>
+              <div style={{ position: "absolute", top: 0, right: 0, width: "180px", height: "180px", background: "radial-gradient(circle, #C8FF0015, transparent)", borderRadius: "50%" }} />
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "16px" }}>
+                <div>
+                  <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "2px", color: "#888", marginBottom: "6px" }}>Empfohlene Preisspanne</div>
+                  <div style={{ fontSize: "38px", fontWeight: 700, color: "#C8FF00", letterSpacing: "-1.5px", lineHeight: 1 }}>
+                    {result.priceLow.toLocaleString("de-DE")} — {result.priceHigh.toLocaleString("de-DE")} €
+                  </div>
+                  <div style={{ fontSize: "13px", color: "#777", marginTop: "6px" }}>
+                    {brand} · {category}{subcategory ? ` (${subcategory})` : ""} · {conditionObj?.label}
+                    {material ? ` · ${material}` : ""}{color ? ` · ${color}` : ""}{pattern ? ` · ${pattern}` : ""}
+                    {hasReceipt ? " · Mit Nachweis" : ""}
+                    {" · "}Sweetspot: <strong style={{ color: "#FFF" }}>{result.priceMid.toLocaleString("de-DE")} €</strong>
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+                  {[
+                    { label: "Tier", value: result.tier },
+                    { label: "Hype", value: `${Math.round(result.hypeScore * 100)}%` },
+                    { label: "Retention", value: `${Math.round(result.retentionRate * 100)}%` },
+                    { label: "Confidence", value: `${result.confidence}%`, highlight: true },
+                  ].map((s, i) => (
+                    <div key={i} style={{ textAlign: "center", background: "#FFFFFF08", borderRadius: "8px", padding: "10px 14px", minWidth: "70px" }}>
+                      <div style={{ fontSize: "9px", textTransform: "uppercase", letterSpacing: "1px", color: "#666", marginBottom: "2px" }}>{s.label}</div>
+                      <div style={{ fontSize: "18px", fontWeight: 700, color: s.highlight ? (result.confidence > 80 ? "#4ADE80" : "#FBBF24") : "#FFF" }}>{s.value}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Tabs */}
+            <div style={{ display: "flex", gap: "3px", marginBottom: "16px", background: "#FFF", borderRadius: "10px", padding: "3px", border: "1px solid #E8E6E3" }}>
+              {[
+                { id: "products", label: `Gefundene Produkte (${useRealData && liveData ? liveData.vinted.count + (liveData.ebay?.count || 0) + (liveData.vestiaire?.count || 0) : result.listings.length})${useRealData ? ' 🟢' : ''}` },
+                { id: "overview", label: "Plattform-Vergleich" },
+                { id: "fees", label: "Netto-Auszahlung" },
+                { id: "breakdown", label: "Preis-Breakdown" },
+                { id: "produkttext", label: "Produkttext" },
+                { id: "history", label: `Verlauf (${searchHistory.length})` },
+              ].map(tab => (
+                <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{ flex: 1, padding: "9px", borderRadius: "7px", border: "none", background: activeTab === tab.id ? "#1A1A2E" : "transparent", color: activeTab === tab.id ? "#C8FF00" : "#777", fontSize: "12px", fontWeight: 600, cursor: "pointer", transition: "all 0.2s" }}>
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {/* ═══ PRODUCTS TAB ═══ */}
+            {activeTab === "products" && (
+              <div>
+                <div style={{ display: "flex", gap: "8px", marginBottom: "16px", alignItems: "center", flexWrap: "wrap" }}>
+                  {liveDataLoading && (
+                    <div style={{ fontSize: "11px", color: "#F59E0B", fontWeight: 600, textTransform: "uppercase", letterSpacing: "1px", display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px", background: "#F59E0B15", borderRadius: "6px", border: "1px solid #F59E0B30" }}>
+                      <span style={{ display: "inline-block", width: "6px", height: "6px", borderRadius: "50%", background: "#F59E0B", animation: "pulse 2s infinite" }}></span>
+                      Ladezeit: Echtdaten werden abgerufen...
+                    </div>
+                  )}
+                  {useRealData && (
+                    <div style={{ fontSize: "11px", color: "#10B981", fontWeight: 600, textTransform: "uppercase", letterSpacing: "1px", display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px", background: "#10B98115", borderRadius: "6px", border: "1px solid #10B98130" }}>
+                      <span style={{ display: "inline-block", width: "6px", height: "6px", borderRadius: "50%", background: "#10B981" }}></span>
+                      Live-Daten: Echtmarkt-Preise
+                    </div>
+                  )}
+                </div>
+                <div style={{ display: "flex", gap: "8px", marginBottom: "16px", alignItems: "center", flexWrap: "wrap" }}>
+                  <div style={{ fontSize: "11px", color: "#999", fontWeight: 600, textTransform: "uppercase", letterSpacing: "1px", marginRight: "4px" }}>Plattform:</div>
+                  {[{ key: "all", label: "Alle" }, ...Object.entries(PLATFORMS).map(([k, v]) => ({ key: k, label: v.name, color: v.color }))].map(f => (
+                    <button key={f.key} onClick={() => setPlatformFilter(f.key)} style={{ padding: "5px 12px", borderRadius: "6px", border: platformFilter === f.key ? `1.5px solid ${f.color || "#1A1A2E"}` : "1px solid #E0DDD8", background: platformFilter === f.key ? `${f.color || "#1A1A2E"}15` : "#FFF", color: platformFilter === f.key ? (f.color || "#1A1A2E") : "#888", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}>
+                      {f.label}
+                    </button>
+                  ))}
+
+                  <div style={{ marginLeft: "auto", display: "flex", gap: "6px", alignItems: "center" }}>
+                    <span style={{ fontSize: "11px", color: "#999", fontWeight: 600, textTransform: "uppercase", letterSpacing: "1px" }}>Sortieren:</span>
+                    <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ padding: "5px 10px", borderRadius: "6px", border: "1px solid #E0DDD8", background: "#FFF", fontSize: "11px", fontWeight: 600, color: "#555", cursor: "pointer", outline: "none" }}>
+                      <option value="match">Match-Score</option>
+                      <option value="price_asc">Preis aufsteigend</option>
+                      <option value="price_desc">Preis absteigend</option>
+                      <option value="date">Neueste zuerst</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div style={{ background: "#FFF", borderRadius: "10px", padding: "12px 16px", border: "1px solid #E8E6E3", marginBottom: "12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span style={{ fontSize: "11px", color: "#999", fontWeight: 600, textTransform: "uppercase", letterSpacing: "1px" }}>Suchbegriff:</span>
+                    <span style={{ fontSize: "14px", fontWeight: 700, color: "#1A1A2E", background: "#C8FF0030", padding: "3px 10px", borderRadius: "6px" }}>
+                      {result.searchQuery}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", gap: "6px" }}>
+                    {Object.entries(PLATFORMS).map(([key, platform]) => (
+                      <a key={key} href={result.platformPrices[key].searchUrl} target="_blank" rel="noopener noreferrer"
+                        style={{ fontSize: "10px", fontWeight: 600, color: platform.color, background: `${platform.color}12`, border: `1px solid ${platform.color}30`, padding: "4px 10px", borderRadius: "5px", textDecoration: "none", display: "flex", alignItems: "center", gap: "3px" }}
+                        onMouseEnter={e => e.currentTarget.style.background = `${platform.color}25`} onMouseLeave={e => e.currentTarget.style.background = `${platform.color}12`}>
+                        <span style={{ fontSize: "8px" }}>&#x2197;</span> {platform.name}
+                      </a>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
+                  {Object.entries(PLATFORMS).map(([key, platform]) => {
+                    const count = result.listings.filter(l => l.platform === key).length;
+                    const avgPrice = Math.round(result.listings.filter(l => l.platform === key).reduce((s, l) => s + l.price, 0) / count);
+                    return (
+                      <div key={key} style={{ flex: 1, background: "#FFF", borderRadius: "10px", padding: "12px 16px", border: "1px solid #E8E6E3", borderTop: `3px solid ${platform.color}` }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontSize: "12px", fontWeight: 600, color: "#1A1A2E" }}>{platform.name}</span>
+                          <span style={{ fontSize: "10px", color: "#999", background: "#F3F2F0", padding: "2px 6px", borderRadius: "4px" }}>{count} Listings</span>
+                        </div>
+                        <div style={{ fontSize: "18px", fontWeight: 700, color: platform.color, marginTop: "4px" }}>{avgPrice.toLocaleString("de-DE")} €</div>
+                        <div style={{ fontSize: "10px", color: "#AAA", marginBottom: "6px" }}>Durchschnittspreis</div>
+                        <a href={result.platformPrices[key].searchUrl} target="_blank" rel="noopener noreferrer"
+                          style={{ fontSize: "10px", color: platform.color, textDecoration: "none", fontWeight: 600, display: "flex", alignItems: "center", gap: "3px" }}
+                          onMouseEnter={e => e.currentTarget.style.textDecoration = "underline"} onMouseLeave={e => e.currentTarget.style.textDecoration = "none"}>
+                          <span style={{ fontSize: "8px" }}>&#x2197;</span> Alle auf {platform.name} suchen
+                        </a>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "12px" }}>
+                  {filteredListings.map(listing => (
+                    <div key={listing.id} onClick={() => setSelectedListing(selectedListing?.id === listing.id ? null : listing)}>
+                      <ProductCard listing={listing} recommendedPrice={result.priceMid} />
+                    </div>
+                  ))}
+                </div>
+
+                {filteredListings.length === 0 && (
+                  <div style={{ textAlign: "center", color: "#999", padding: "40px", fontSize: "13px" }}>
+                    Keine Produkte für diesen Filter gefunden.
+                  </div>
+                )}
+
+                {selectedListing && (
+                  <div style={{ marginTop: "16px", background: "#FFF", borderRadius: "12px", border: `2px solid ${selectedListing.platformColor}`, padding: "20px", animation: "fadeIn 0.3s ease-out" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "12px" }}>
+                      <div>
+                        <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "1.5px", color: "#999", marginBottom: "4px" }}>Ausgewähltes Listing</div>
+                        <div style={{ fontSize: "18px", fontWeight: 700, color: "#1A1A2E" }}>{selectedListing.title}</div>
+                      </div>
+                      <button onClick={() => setSelectedListing(null)} style={{ background: "none", border: "none", fontSize: "18px", color: "#999", cursor: "pointer", padding: "4px" }}>x</button>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: "12px" }}>
+                      {[
+                        { label: "Preis", value: `${selectedListing.price.toLocaleString("de-DE")} €` },
+                        { label: "Plattform", value: selectedListing.platformName },
+                        { label: "Zustand", value: selectedListing.condition },
+                        { label: "Standort", value: selectedListing.city },
+                        { label: "Match-Score", value: `${selectedListing.matchScore}%` },
+                        { label: "Online seit", value: selectedListing.daysAgo === 0 ? "Heute" : `${selectedListing.daysAgo} Tagen` },
+                      ].map((item, i) => (
+                        <div key={i} style={{ background: "#F8F7F5", borderRadius: "8px", padding: "10px 12px" }}>
+                          <div style={{ fontSize: "9px", textTransform: "uppercase", letterSpacing: "1px", color: "#999", marginBottom: "2px" }}>{item.label}</div>
+                          <div style={{ fontSize: "14px", fontWeight: 600, color: "#1A1A2E" }}>{item.value}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ marginTop: "12px", display: "flex", gap: "10px", alignItems: "stretch" }}>
+                      <div style={{ flex: 1, padding: "10px 14px", background: "#FFFDE7", borderRadius: "8px", fontSize: "12px", color: "#7C6F00", display: "flex", alignItems: "center" }}>
+                        Preisdifferenz zum Sweetspot: <strong style={{ marginLeft: "4px" }}>{((selectedListing.price - result.priceMid) / result.priceMid * 100).toFixed(1)}%</strong>&nbsp;({selectedListing.price > result.priceMid ? "über" : "unter"} Empfehlung)
+                      </div>
+                      <a href={selectedListing.searchUrl} target="_blank" rel="noopener noreferrer"
+                        style={{ display: "flex", alignItems: "center", gap: "6px", padding: "10px 20px", borderRadius: "8px", background: selectedListing.platformColor, color: "#FFF", fontSize: "13px", fontWeight: 700, textDecoration: "none", whiteSpace: "nowrap" }}>
+                        <span>&#x2197;</span> Auf {selectedListing.platformName} ansehen
+                      </a>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ═══ PLATFORM TAB ═══ */}
+            {activeTab === "overview" && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "14px" }}>
+                {Object.entries(result.platformPrices).map(([key, data]) => {
+                  const platform = PLATFORMS[key];
+                  const trend = generateTrend(data.mid);
+                  return (
+                    <div key={key} style={{ background: "#FFF", borderRadius: "12px", padding: "20px", border: "1px solid #E8E6E3", position: "relative", overflow: "hidden" }}>
+                      <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "3px", background: platform.color }} />
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "14px" }}>
+                        <div style={{ width: "32px", height: "32px", borderRadius: "7px", background: platform.color, display: "flex", alignItems: "center", justifyContent: "center", color: "#FFF", fontSize: "11px", fontWeight: 700 }}>{platform.icon}</div>
+                        <div>
+                          <div style={{ fontWeight: 600, fontSize: "13px", color: "#1A1A2E" }}>{platform.name}</div>
+                          <div style={{ fontSize: "10px", color: "#999" }}>{data.listings} Listings</div>
+                        </div>
+                      </div>
+                      <div style={{ fontSize: "24px", fontWeight: 700, color: "#1A1A2E", marginBottom: "2px" }}>{data.mid.toLocaleString("de-DE")} €</div>
+                      <div style={{ fontSize: "11px", color: "#888", marginBottom: "10px" }}>{data.low.toLocaleString("de-DE")} — {data.high.toLocaleString("de-DE")} €</div>
+                      <div style={{ borderTop: "1px solid #F0F0F0", paddingTop: "10px" }}>
+                        <div style={{ fontSize: "9px", color: "#999", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "4px" }}>12-Wochen Trend</div>
+                        <MiniChart data={trend} color={platform.color} width={200} height={36} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* ═══ FEES TAB ═══ */}
+            {activeTab === "fees" && (
+              <div>
+                <div style={{ background: "#FFF", borderRadius: "12px", padding: "24px", border: "1px solid #E8E6E3", marginBottom: "16px" }}>
+                  <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "2px", color: "#999", marginBottom: "16px", fontWeight: 600 }}>Netto-Auszahlung pro Plattform</div>
+                  {Object.entries(PLATFORM_FEES).map(([key, feeData]) => {
+                    const platformPrice = result.platformPrices[key]?.mid || result.priceMid;
+                    const netPayout = feeData.calcNet(platformPrice);
+                    const feeAmount = platformPrice - netPayout;
+                    const feePercent = ((feeAmount / platformPrice) * 100).toFixed(1);
+                    const maxNet = Math.max(...Object.entries(PLATFORM_FEES).map(([k, f]) => f.calcNet(result.platformPrices[k]?.mid || result.priceMid)));
+                    const barWidth = (netPayout / maxNet) * 100;
+                    const platform = PLATFORMS[key];
+                    return (
+                      <div key={key} style={{ marginBottom: "16px", paddingBottom: "16px", borderBottom: "1px solid #F0F0F0" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                            <div style={{ width: "28px", height: "28px", borderRadius: "6px", background: platform.color, display: "flex", alignItems: "center", justifyContent: "center", color: "#FFF", fontSize: "10px", fontWeight: 700 }}>{platform.icon}</div>
+                            <div>
+                              <div style={{ fontWeight: 600, fontSize: "13px", color: "#1A1A2E" }}>{platform.name}</div>
+                              <div style={{ fontSize: "10px", color: "#999" }}>{feeData.note}</div>
+                            </div>
+                          </div>
+                          <div style={{ textAlign: "right" }}>
+                            <div style={{ fontSize: "20px", fontWeight: 700, color: "#1A1A2E" }}>{netPayout.toLocaleString("de-DE")} €</div>
+                            <div style={{ fontSize: "10px", color: "#dc2626" }}>-{feeAmount.toLocaleString("de-DE")} € ({feePercent}% Gebühren)</div>
+                          </div>
+                        </div>
+                        <div style={{ height: "8px", background: "#F3F2F0", borderRadius: "4px", overflow: "hidden" }}>
+                          <div style={{ height: "100%", width: `${barWidth}%`, background: platform.color, borderRadius: "4px", transition: "width 0.5s ease" }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {result.farfetchQuote && (
+                  <div style={{ background: "linear-gradient(135deg, #1A1A2E 0%, #2D2D4E 100%)", borderRadius: "12px", padding: "24px", border: "1px solid #444", color: "#FFF" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "14px" }}>
+                      <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "2px", color: "#888", fontWeight: 600 }}>Farfetch Second Life</div>
+                      <span style={{ fontSize: "9px", background: "#C8FF0030", color: "#C8FF00", padding: "2px 8px", borderRadius: "4px", fontWeight: 600 }}>Nur Guthaben</span>
+                    </div>
+                    <div style={{ fontSize: "28px", fontWeight: 700, color: "#C8FF00", marginBottom: "4px" }}>
+                      {result.farfetchQuote.low.toLocaleString("de-DE")} — {result.farfetchQuote.high.toLocaleString("de-DE")} €
+                    </div>
+                    <div style={{ fontSize: "12px", color: "#888", marginBottom: "12px" }}>
+                      Geschätztes Farfetch-Guthaben · Sweetspot: {result.farfetchQuote.mid.toLocaleString("de-DE")} €
+                    </div>
+                    <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                      <span style={{ fontSize: "10px", background: "#FFFFFF10", padding: "4px 10px", borderRadius: "4px", color: "#AAA" }}>Buy-Back Modell</span>
+                      <span style={{ fontSize: "10px", background: "#FFFFFF10", padding: "4px 10px", borderRadius: "4px", color: "#AAA" }}>Kostenlose Abholung</span>
+                      <span style={{ fontSize: "10px", background: "#FFFFFF10", padding: "4px 10px", borderRadius: "4px", color: "#AAA" }}>Verifizierung in 48h</span>
+                      <span style={{ fontSize: "10px", background: "#FFFFFF10", padding: "4px 10px", borderRadius: "4px", color: "#AAA" }}>Nur Taschen · 27 Marken</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ═══ BREAKDOWN TAB ═══ */}
+            {activeTab === "breakdown" && (
+              <div style={{ background: "#FFF", borderRadius: "12px", padding: "24px", border: "1px solid #E8E6E3" }}>
+                <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "2px", color: "#999", marginBottom: "16px", fontWeight: 600 }}>Pricing Formel</div>
+                <div style={{ fontFamily: "monospace", background: "#1A1A2E", color: "#C8FF00", borderRadius: "8px", padding: "16px", marginBottom: "20px", fontSize: "12px", lineHeight: 1.8 }}>
+                  <span style={{ color: "#888" }}>// Maison Ô Pricing Formula v3.1 — Real Secondhand Market Data</span><br />
+                  price = resale_mid × condition × brand_strength × hype × adjustments<br /><br />
+                  resale_mid = <span style={{ color: "#FFF" }}>{result.retailMid.toLocaleString("de-DE")} €</span> · condition = <span style={{ color: "#FFF" }}>{conditionObj?.label} (×{result.conditionMultiplier})</span> · hype = <span style={{ color: "#FFF" }}>{Math.round(result.hypeScore * 100)}%</span><br /><br />
+                  <span style={{ color: "#4ADE80" }}>→ {result.priceMid.toLocaleString("de-DE")} € (±20%)</span>
+                </div>
+                <div style={{ display: "flex", gap: "10px", marginBottom: "16px" }}>
+                  {[
+                    { label: "Marktwert", weight: "60%", color: "#1A1A2E", value: Math.round(result.priceMid * 0.6), flex: 6 },
+                    { label: "Zustand", weight: "30%", color: conditionObj?.color || "#888", value: Math.round(result.priceMid * 0.3), flex: 3 },
+                    { label: "Brand Hype", weight: "10%", color: "#86940a", value: Math.round(result.priceMid * 0.1), flex: 1 },
+                  ].map((p, i) => (
+                    <div key={i} style={{ flex: p.flex, background: `${p.color}10`, border: `1.5px solid ${p.color}30`, borderRadius: "8px", padding: "14px", textAlign: "center" }}>
+                      <div style={{ fontSize: "9px", textTransform: "uppercase", letterSpacing: "1px", color: "#888", marginBottom: "3px" }}>{p.label}</div>
+                      <div style={{ fontSize: "20px", fontWeight: 700, color: p.color }}>{p.value.toLocaleString("de-DE")} €</div>
+                      <div style={{ fontSize: "11px", color: "#AAA" }}>{p.weight}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "10px", marginTop: "16px" }}>
+                  {[
+                    { label: "Material", value: result.materialMult ? `×${result.materialMult.toFixed(2)}` : "—", active: result.materialMult && result.materialMult !== 1 },
+                    { label: "Farbe", value: result.colorMult ? `×${result.colorMult.toFixed(2)}` : "—", active: result.colorMult && result.colorMult !== 1 },
+                    { label: "Muster", value: result.patternMult ? `×${result.patternMult.toFixed(2)}` : "—", active: result.patternMult && result.patternMult !== 1 },
+                    { label: "Herkunft", value: result.receiptBonus > 1 ? "+7%" : "—", active: result.receiptBonus > 1 },
+                  ].map((f, i) => (
+                    <div key={i} style={{ background: f.active ? "#C8FF0015" : "#F8F7F5", borderRadius: "8px", padding: "10px 12px", textAlign: "center", border: f.active ? "1px solid #C8FF0040" : "1px solid #E8E6E3" }}>
+                      <div style={{ fontSize: "9px", textTransform: "uppercase", letterSpacing: "1px", color: "#999", marginBottom: "2px" }}>{f.label}</div>
+                      <div style={{ fontSize: "16px", fontWeight: 700, color: f.active ? "#1A1A2E" : "#CCC" }}>{f.value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ marginTop: "16px", background: "#F8F7F5", borderRadius: "8px", padding: "14px 16px" }}>
+                  <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "1.5px", color: "#999", marginBottom: "8px", fontWeight: 600 }}>Vestiaire Collective Zustandsmapping</div>
+                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                    {CONDITIONS.map(c => (
+                      <div key={c.id} style={{ background: condition === c.id ? `${c.color}15` : "#FFF", border: condition === c.id ? `1.5px solid ${c.color}` : "1px solid #E0DDD8", borderRadius: "6px", padding: "6px 10px", fontSize: "11px" }}>
+                        <span style={{ fontWeight: 600, color: c.color }}>{c.label}</span>
+                        <span style={{ color: "#999", margin: "0 4px" }}>→</span>
+                        <span style={{ color: "#555" }}>{c.vcMapping}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ═══ PRODUKTTEXT TAB ═══ */}
+            {activeTab === "produkttext" && (
+              <div>
+                {/* Image Upload + Generator */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginBottom: "16px" }}>
+                  {/* Left: Image Upload */}
+                  <div style={{ background: "#FFF", borderRadius: "12px", padding: "24px", border: "1px solid #E8E6E3" }}>
+                    <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "2px", color: "#999", marginBottom: "16px", fontWeight: 600 }}>Produktbild</div>
+
+                    {!productImagePreview ? (
+                      <div
+                        onDrop={handleDrop}
+                        onDragOver={handleDragOver}
+                        onDragLeave={handleDragLeave}
+                        onClick={() => fileInputRef.current?.click()}
+                        style={{
+                          border: isDragging ? "2px dashed #C8FF00" : "2px dashed #E0DDD8",
+                          borderRadius: "12px",
+                          padding: "40px 20px",
+                          textAlign: "center",
+                          cursor: "pointer",
+                          background: isDragging ? "#C8FF0008" : "#FAFAF8",
+                          transition: "all 0.3s",
+                          minHeight: "240px",
+                          display: "flex",
+                          flexDirection: "column",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <div style={{ fontSize: "48px", marginBottom: "12px", opacity: 0.3 }}>📷</div>
+                        <div style={{ fontSize: "14px", fontWeight: 600, color: "#555", marginBottom: "6px" }}>
+                          Bild hierher ziehen
+                        </div>
+                        <div style={{ fontSize: "12px", color: "#AAA", marginBottom: "16px" }}>
+                          oder klicken zum Auswählen
+                        </div>
+                        <div style={{ fontSize: "10px", color: "#CCC" }}>JPG, PNG, WEBP</div>
+                        <input
+                          ref={fileInputRef}
+                          type="file"
+                          accept="image/*"
+                          onChange={(e) => handleImageUpload(e.target.files[0])}
+                          style={{ display: "none" }}
+                        />
+                      </div>
+                    ) : (
+                      <div style={{ position: "relative" }}>
+                        <img
+                          src={productImagePreview}
+                          alt="Produktbild"
+                          style={{
+                            width: "100%",
+                            maxHeight: "320px",
+                            objectFit: "contain",
+                            borderRadius: "10px",
+                            background: "#F8F7F5",
+                          }}
+                        />
+                        <button
+                          onClick={removeImage}
+                          style={{
+                            position: "absolute", top: "8px", right: "8px",
+                            width: "28px", height: "28px", borderRadius: "50%",
+                            background: "#1A1A2E", color: "#FFF", border: "none",
+                            fontSize: "14px", cursor: "pointer", display: "flex",
+                            alignItems: "center", justifyContent: "center",
+                          }}
+                        >
+                          ×
+                        </button>
+                        <div style={{ marginTop: "8px", fontSize: "11px", color: "#AAA", textAlign: "center" }}>
+                          {productImage?.name}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Right: Product Info Summary + Generate */}
+                  <div style={{ background: "#FFF", borderRadius: "12px", padding: "24px", border: "1px solid #E8E6E3", display: "flex", flexDirection: "column" }}>
+                    <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "2px", color: "#999", marginBottom: "16px", fontWeight: 600 }}>Produkt-Metadaten</div>
+
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "16px" }}>
+                        {[
+                          { label: "Marke", value: brand || "—" },
+                          { label: "Kategorie", value: category ? `${category}${subcategory ? ` / ${subcategory}` : ""}` : "—" },
+                          { label: "Material", value: material || "—" },
+                          { label: "Farbe", value: color || "—" },
+                          { label: "Muster", value: pattern || "—" },
+                          { label: "Kondition", value: conditionObj?.label || "—" },
+                          { label: "Produktname", value: productName || "—" },
+                          { label: "Preis", value: result?.priceMid ? `${result.priceMid.toLocaleString("de-DE")} €` : "—" },
+                        ].map((item, i) => (
+                          <div key={i} style={{ background: "#F8F7F5", borderRadius: "8px", padding: "8px 12px" }}>
+                            <div style={{ fontSize: "9px", textTransform: "uppercase", letterSpacing: "1px", color: "#999", marginBottom: "2px" }}>{item.label}</div>
+                            <div style={{ fontSize: "13px", fontWeight: 600, color: item.value === "—" ? "#CCC" : "#1A1A2E" }}>{item.value}</div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {(!brand || !category) && (
+                        <div style={{ background: "#FFF8E1", borderRadius: "8px", padding: "12px", border: "1px solid #FFE082", marginBottom: "16px" }}>
+                          <div style={{ fontSize: "12px", color: "#F57F17", fontWeight: 600 }}>
+                            Bitte zuerst Marke und Kategorie oben eingeben, um einen Produkttext zu generieren.
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <button
+                      onClick={handleGenerateDescription}
+                      disabled={!brand || !category}
+                      style={{
+                        width: "100%", padding: "14px",
+                        borderRadius: "10px", border: "none",
+                        background: (!brand || !category) ? "#CCC" : "#1A1A2E",
+                        color: (!brand || !category) ? "#888" : "#C8FF00",
+                        fontSize: "14px", fontWeight: 700,
+                        cursor: (!brand || !category) ? "not-allowed" : "pointer",
+                        letterSpacing: "0.5px", transition: "all 0.3s",
+                        display: "flex", alignItems: "center", justifyContent: "center", gap: "8px",
+                      }}
+                    >
+                      <span style={{ fontSize: "16px" }}>✨</span>
+                      Produkttext generieren
+                    </button>
+                  </div>
+                </div>
+
+                {/* Generated Description Output */}
+                {generatedText && (
+                  <div style={{ background: "#FFF", borderRadius: "12px", padding: "28px", border: "1px solid #E8E6E3", animation: "fadeIn 0.5s ease-out" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+                      <div>
+                        <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "2px", color: "#999", marginBottom: "4px", fontWeight: 600 }}>Shopify Produktbeschreibung</div>
+                        <div style={{ fontSize: "13px", color: "#888" }}>Im Tone of Voice von MAISON <span style={{ color: "#C8FF00", background: "#1A1A2E", padding: "1px 5px", borderRadius: "3px", fontWeight: 700 }}>Ô</span> — Collectif Luxe</div>
+                      </div>
+                      <div style={{ display: "flex", gap: "8px" }}>
+                        <button
+                          onClick={handleCopyShopify}
+                          style={{
+                            padding: "8px 16px", borderRadius: "8px",
+                            border: "1.5px solid #1A1A2E", background: "#FFF",
+                            color: "#1A1A2E", fontSize: "12px", fontWeight: 600,
+                            cursor: "pointer", transition: "all 0.2s",
+                          }}
+                        >
+                          Text kopieren
+                        </button>
+                        <button
+                          onClick={handleCopyShopifyHTML}
+                          style={{
+                            padding: "8px 16px", borderRadius: "8px",
+                            border: "none", background: "#1A1A2E",
+                            color: "#C8FF00", fontSize: "12px", fontWeight: 600,
+                            cursor: "pointer", transition: "all 0.2s",
+                          }}
+                        >
+                          HTML kopieren
+                        </button>
+                        {copySuccess && (
+                          <span style={{
+                            padding: "8px 12px", borderRadius: "8px",
+                            background: "#C8FF0030", color: "#1A1A2E",
+                            fontSize: "12px", fontWeight: 600,
+                            animation: "fadeIn 0.3s ease-out",
+                          }}>
+                            {copySuccess}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Editable Titel */}
+                    <div style={{ marginBottom: "20px" }}>
+                      <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#555", marginBottom: "6px", textTransform: "uppercase", letterSpacing: "1px" }}>Titel</label>
+                      <input
+                        type="text"
+                        value={editTitel}
+                        onChange={(e) => setEditTitel(e.target.value)}
+                        style={{
+                          width: "100%", padding: "12px 16px",
+                          borderRadius: "8px", border: "1.5px solid #E0DDD8",
+                          fontSize: "18px", fontWeight: 700, color: "#1A1A2E",
+                          outline: "none", background: "#FAFAF8",
+                          fontFamily: "'Georgia', 'Times New Roman', serif",
+                          boxSizing: "border-box",
+                        }}
+                      />
+                    </div>
+
+                    {/* Editable Beschreibung */}
+                    <div style={{ marginBottom: "20px" }}>
+                      <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#555", marginBottom: "6px", textTransform: "uppercase", letterSpacing: "1px" }}>Beschreibung</label>
+                      <textarea
+                        value={editBeschreibung}
+                        onChange={(e) => setEditBeschreibung(e.target.value)}
+                        rows={7}
+                        style={{
+                          width: "100%", padding: "14px 16px",
+                          borderRadius: "8px", border: "1.5px solid #E0DDD8",
+                          fontSize: "14px", color: "#333", lineHeight: 1.8,
+                          outline: "none", background: "#FAFAF8", resize: "vertical",
+                          fontFamily: "'Georgia', 'Times New Roman', serif",
+                          boxSizing: "border-box",
+                        }}
+                      />
+                    </div>
+
+                    {/* Editable Besonderheit */}
+                    <div style={{ marginBottom: "20px" }}>
+                      <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "#555", marginBottom: "6px", textTransform: "uppercase", letterSpacing: "1px" }}>Besonderheit</label>
+                      <textarea
+                        value={editBesonderheit}
+                        onChange={(e) => setEditBesonderheit(e.target.value)}
+                        rows={3}
+                        style={{
+                          width: "100%", padding: "14px 16px",
+                          borderRadius: "8px", border: "1.5px solid #E0DDD8",
+                          fontSize: "14px", color: "#333", lineHeight: 1.8,
+                          outline: "none", background: "#FAFAF8", resize: "vertical",
+                          fontFamily: "'Georgia', 'Times New Roman', serif",
+                          fontStyle: "italic",
+                          boxSizing: "border-box",
+                        }}
+                      />
+                    </div>
+
+                    {/* Preview */}
+                    <div style={{ borderTop: "1px solid #E8E6E3", paddingTop: "20px" }}>
+                      <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "2px", color: "#999", marginBottom: "14px", fontWeight: 600 }}>Vorschau — Shopify</div>
+                      <div style={{
+                        background: "linear-gradient(135deg, #1A1A2E 0%, #2D2D4E 100%)",
+                        borderRadius: "12px", padding: "28px", color: "#FFF",
+                      }}>
+                        <div style={{ fontSize: "20px", fontWeight: 700, color: "#C8FF00", marginBottom: "16px", fontFamily: "'Georgia', 'Times New Roman', serif" }}>
+                          {editTitel}
+                        </div>
+                        <div style={{ fontSize: "14px", color: "#DDD", lineHeight: 1.9, marginBottom: "16px", fontFamily: "'Georgia', 'Times New Roman', serif", whiteSpace: "pre-line" }}>
+                          {editBeschreibung}
+                        </div>
+                        <div style={{ borderTop: "1px solid #FFFFFF20", paddingTop: "14px" }}>
+                          <div style={{ fontSize: "11px", textTransform: "uppercase", letterSpacing: "1.5px", color: "#C8FF00", marginBottom: "6px", fontWeight: 600 }}>Besonderheit</div>
+                          <div style={{ fontSize: "14px", color: "#CCC", fontStyle: "italic", lineHeight: 1.8, fontFamily: "'Georgia', 'Times New Roman', serif" }}>
+                            {editBesonderheit}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Regenerate */}
+                    <div style={{ marginTop: "16px", display: "flex", gap: "10px", alignItems: "center" }}>
+                      <button
+                        onClick={handleGenerateDescription}
+                        style={{
+                          padding: "10px 20px", borderRadius: "8px",
+                          border: "1.5px solid #E0DDD8", background: "#FFF",
+                          color: "#555", fontSize: "12px", fontWeight: 600,
+                          cursor: "pointer", transition: "all 0.2s",
+                          display: "flex", alignItems: "center", gap: "6px",
+                        }}
+                      >
+                        <span>↻</span> Neu generieren
+                      </button>
+                      <span style={{ fontSize: "11px", color: "#BBB" }}>
+                        Alle Felder sind editierbar — passen Sie den Text nach Bedarf an.
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {!generatedText && (
+                  <div style={{ background: "#FFF", borderRadius: "12px", padding: "40px", border: "1px solid #E8E6E3", textAlign: "center" }}>
+                    <div style={{ fontSize: "44px", marginBottom: "12px", opacity: 0.3 }}>✍️</div>
+                    <div style={{ fontSize: "15px", fontWeight: 500, color: "#999", marginBottom: "6px" }}>Produkttext Generator</div>
+                    <div style={{ fontSize: "12px", color: "#BBB", maxWidth: "400px", margin: "0 auto", lineHeight: 1.6 }}>
+                      Laden Sie ein Produktbild hoch und klicken Sie auf "Produkttext generieren", um eine Shopify-Beschreibung im Tone of Voice von MAISON Ô zu erstellen.
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ═══ HISTORY TAB ═══ */}
+            {activeTab === "history" && (
+              <div style={{ background: "#FFF", borderRadius: "12px", padding: "20px", border: "1px solid #E8E6E3" }}>
+                {searchHistory.length === 0 ? (
+                  <div style={{ textAlign: "center", color: "#999", padding: "40px 0", fontSize: "13px" }}>Noch keine Suchen.</div>
+                ) : searchHistory.map((entry, i) => (
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 0", borderBottom: i < searchHistory.length - 1 ? "1px solid #F0F0F0" : "none" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                      <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#C8FF00" }} />
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: "13px", color: "#1A1A2E" }}>{entry.brand} — {entry.category}</div>
+                        <div style={{ fontSize: "11px", color: "#999" }}>{CONDITIONS.find(c => c.id === entry.condition)?.label} · {entry.timestamp}</div>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: "16px", fontWeight: 700, color: "#1A1A2E" }}>{entry.price.toLocaleString("de-DE")} €</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ marginTop: "16px", padding: "12px 16px", background: "#FFFDE7", borderRadius: "8px", border: "1px solid #FFF59D", fontSize: "11px", color: "#7C6F00", lineHeight: 1.5 }}>
+              <strong>Hinweis:</strong> Preise basieren auf Analyse von Vinted, eBay & Vestiaire Collective. Finale Preissetzung obliegt dem Team. System: Decision Support · Auto-Repricing: Off
+            </div>
+          </div>
+        )}
+
+        {!result && !isCalculating && (
+          <div>
+            {/* Quick access to Produkttext even without pricing */}
+            {(brand && category) && (
+              <div style={{ marginBottom: "16px" }}>
+                <button
+                  onClick={() => { setActiveTab("produkttext"); setResult({ priceMid: null, listings: [], platformPrices: {}, confidence: 0, tier: "—", hypeScore: 0, retentionRate: 0, conditionMultiplier: 0, retailMid: 0, searchQuery: "", enrichedQuery: "", materialMult: 1, colorMult: 1, patternMult: 1, receiptBonus: 1, farfetchQuote: null, platformNetPrices: {}, priceLow: 0, priceHigh: 0 }); }}
+                  style={{
+                    width: "100%", padding: "16px",
+                    borderRadius: "12px", border: "2px dashed #C8FF00",
+                    background: "#C8FF0008", color: "#1A1A2E",
+                    fontSize: "14px", fontWeight: 600,
+                    cursor: "pointer", transition: "all 0.3s",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: "10px",
+                  }}
+                >
+                  <span style={{ fontSize: "20px" }}>✍️</span>
+                  Direkt Produkttext generieren (ohne Preisberechnung)
+                </button>
+              </div>
+            )}
+            <div style={{ textAlign: "center", padding: "50px 20px", color: "#BBB" }}>
+              <div style={{ fontSize: "44px", marginBottom: "12px", opacity: 0.3 }}>👜</div>
+              <div style={{ fontSize: "15px", fontWeight: 500, color: "#999" }}>Marke, Kategorie und Zustand auswählen</div>
+              <div style={{ fontSize: "12px", marginTop: "4px", color: "#BBB" }}>Die Pricing Engine analysiert 3 Plattformen in Echtzeit</div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div style={{ borderTop: "1px solid #E8E6E3", padding: "16px 32px", display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "32px" }}>
+        <div style={{ fontSize: "11px", color: "#AAA" }}>MAISON Ô Pricing Intelligence · v4.0</div>
+        <div style={{ fontSize: "10px", color: "#CCC" }}>Powered by Digital Pulses</div>
+      </div>
+
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        input:focus { border-color: #1A1A2E !important; box-shadow: 0 0 0 3px #1A1A2E15; }
+        select:focus { border-color: #1A1A2E !important; }
+        button:hover { opacity: 0.92; }
+        * { box-sizing: border-box; }
+        ::-webkit-scrollbar { width: 5px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #DDD; border-radius: 3px; }
+      `}</style>
+    </div>
+  );
+}
+
+
+    // Mount
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(React.createElement(MaisonOPricing));
+  </script>
+</body>
+</html>
