@@ -58,16 +58,28 @@ async function scrapeVinted(brand, productName /* material, color intentionally 
       return { listings: [], count: 0, error: 'Brand not found in Vinted' };
     }
     // Vinted: brand filter via brand_ids, search_text = productName only
+    // Paginate: 2 pages × 96 = up to 192 items
     const searchText = productName || '';
-    const url = `https://www.vinted.de/api/v2/catalog/items?search_text=${encodeURIComponent(searchText)}&brand_ids[]=${brandId}&per_page=40&order=relevance`;
+    const pageUrls = [1, 2].map(p =>
+      `https://www.vinted.de/api/v2/catalog/items?search_text=${encodeURIComponent(searchText)}&brand_ids[]=${brandId}&per_page=96&page=${p}&order=relevance`
+    );
 
-    const response = await fetchWithRetry(url, { headers: HEADERS_BASE });
-    if (!response.ok) return { listings: [], count: 0, error: `Vinted API error: ${response.status}` };
+    const all = [];
+    for (const url of pageUrls) {
+      try {
+        const response = await fetchWithRetry(url, { headers: HEADERS_BASE });
+        if (!response.ok) break;
+        const data = await response.json();
+        const items = data.items || [];
+        if (items.length === 0) break;
+        all.push(...items);
+        if (items.length < 96) break;
+      } catch {
+        break;
+      }
+    }
 
-    const data = await response.json();
-    const items = data.items || [];
-
-    const listings = items
+    const listings = all
       .map(item => ({
         title: item.title || 'Unknown',
         price: item.price_cents ? item.price_cents / 100 : (typeof item.price === 'object' ? parseFloat(item.price?.amount) : parseFloat(item.price)) || 0,
@@ -76,8 +88,7 @@ async function scrapeVinted(brand, productName /* material, color intentionally 
         url: `https://www.vinted.de/items/${item.id}`,
         platform: 'Vinted',
         imageUrl: item.photo?.high_resolution?.url || item.photo?.url || '',
-        currency: 'EUR',
-        createdAt: item.photo?.high_resolution?.timestamp || null
+        currency: 'EUR'
       }))
       .filter(l => l.price > 0);
 
@@ -92,7 +103,8 @@ async function scrapeEbay(brand, productName, category /* material, color droppe
     // eBay: brand + productName + category hint (e.g. "Hermès Birkin Tasche")
     const hint = CATEGORY_HINTS[category] || '';
     const searchText = [brand, productName, hint].filter(Boolean).join(' ');
-    const url = `https://www.ebay.de/sch/i.html?_nkw=${encodeURIComponent(searchText)}&_sacat=0&_sop=12&_ipg=60&LH_PrefLoc=1&rt=nc`;
+    // eBay: single page, _ipg=240 (max) gets ~240 results
+    const url = `https://www.ebay.de/sch/i.html?_nkw=${encodeURIComponent(searchText)}&_sacat=0&_sop=12&_ipg=240&LH_PrefLoc=1&rt=nc`;
 
     const response = await fetchWithRetry(url, { headers: HEADERS_BASE });
     if (!response.ok) return { listings: [], count: 0, error: `eBay fetch error: ${response.status}` };
@@ -110,7 +122,6 @@ function parseEbayListings(html) {
   try {
     const $ = cheerio.load(html);
     $('li.s-item, div.s-item').each((_, el) => {
-      if (listings.length >= 20) return false;
       const $el = $(el);
       const title = $el.find('.s-item__title [role="heading"], .s-item__title span[role="heading"], .s-item__title').first().text().trim();
       const priceText = $el.find('.s-item__price').first().text().trim();
@@ -147,7 +158,7 @@ async function scrapeVestiaire(brand, productName /* material, color dropped */)
     const searchText = [brand, productName].filter(Boolean).join(' ');
 
     try {
-      const apiUrl = `https://search.vestiairecollective.com/v1/products/search?q=${encodeURIComponent(searchText)}&country=DE&limit=40`;
+      const apiUrl = `https://search.vestiairecollective.com/v1/products/search?q=${encodeURIComponent(searchText)}&country=DE&limit=48`;
       const response = await fetchWithRetry(apiUrl, { headers: HEADERS_BASE }, 0);
       if (response.ok) {
         const data = await response.json();
@@ -190,7 +201,6 @@ function parseVestiareListings(html) {
     const $ = cheerio.load(html);
 
     $('[data-testid="product-card"], [data-testid="product-item"], article.product-card, a.product-search-card').each((_, el) => {
-      if (listings.length >= 20) return false;
       const $el = $(el);
       const title = $el.find('h2, [data-testid="product-card-title"], .product-card__title, .product-search-card__product-title').first().text().trim();
       const priceText = $el.find('[data-testid*="price"], [class*="Price"], [class*="price"], .product-card__price, .product-search-card__price').first().text().trim();
@@ -222,7 +232,7 @@ function parseVestiareListings(html) {
         try {
           const data = JSON.parse(jsonMatch[1]);
           const items = findItemsInObject(data);
-          items.slice(0, 20).forEach(item => {
+          items.forEach(item => {
             const price = typeof item.price === 'object' ? parseFloat(item.price.amount) : parseFloat(item.price);
             if (Number.isFinite(price) && price > 0 && item.name) {
               listings.push({

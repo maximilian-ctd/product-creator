@@ -531,109 +531,115 @@ function generateListings(brand, category, conditionId, basePrice, productName, 
   return listings.sort((a, b) => b.matchScore - a.matchScore);
 }
 
-// Tiered blend weights: ≥5 listings → 70/30 real/model, 3-4 → 50/50, <3 → 100% model.
+// Minimum scraped listings required to produce a price. Below this → "keine Daten".
 const REAL_DATA_MIN_LISTINGS = 3;
-function realDataWeight(count) {
-  if (count >= 5) return 0.70;
-  if (count >= 3) return 0.50;
-  return 0;
+
+// Map a real scraped listing into the UI listing shape (for ProductCard).
+function transformRealListingForUi(l, idx) {
+  const platformKey = l.platformKey
+    || (l.platform === 'Vinted' ? 'vinted'
+        : l.platform === 'eBay' ? 'ebay'
+        : 'vestiaire');
+  const meta = PLATFORMS[platformKey] || { name: l.platform || 'Market', color: '#888' };
+  const condObj = CONDITIONS.find(c => c.id === l.condition);
+  const condLabel = condObj?.label || (l.conditionRaw || 'Unbekannt');
+  const hueSeed = String(l.title || '').split('').reduce((s, c) => s + c.charCodeAt(0), idx);
+  return {
+    id: `real-${platformKey}-${idx}`,
+    platform: platformKey,
+    platformName: meta.name,
+    platformColor: meta.color,
+    city: '',
+    daysAgo: 0,
+    condition: condLabel,
+    title: l.title || 'Unbekannt',
+    price: Math.round(l.price),
+    matchScore: Math.max(1, Math.round((l.relevance ?? 0.5) * 100)),
+    imageHue: hueSeed % 360,
+    imageSat: 22,
+    imageLig: 85,
+    searchUrl: l.url || meta.searchUrl?.('') || '#',
+    isReal: true,
+  };
 }
 
-// ── Pricing Engine ──
+// ── Pricing Engine — rein datengetrieben, ausschließlich aus gescrapten Marktdaten ──
 function calculatePrice(brand, category, conditionId, productName, material, color, pattern, hasReceipt, realAggregate = null) {
   const brandData = BRAND_DATABASE[brand];
   if (!brandData) return null;
   const condition = CONDITIONS.find(c => c.id === conditionId);
   if (!condition) return null;
-  const tier = brandData.tier;
-  const resaleRange = CATEGORY_RESALE_RANGES[category]?.[tier];
-  if (!resaleRange) return null;
 
-  // Use real secondhand market ranges directly
-  const [resaleLow, resaleHigh] = resaleRange;
-  const resaleMid = (resaleLow + resaleHigh) / 2;
-
-  // Brand-specific category strength adjusts within the range
-  const categoryMultiplier = brandData.categories[category] || 0.6;
-  // Normalize around 1.0 — a multiplier of 1.1 means slightly above-average for this category
-  const brandCategoryStrength = categoryMultiplier / 0.75; // 0.75 is rough midpoint of multipliers
-
-  // Apply condition directly to the resale midpoint
-  const conditionAdjusted = resaleMid * condition.multiplier * brandCategoryStrength;
-
-  // Material, Color, Pattern adjustments (subtle modifiers)
-  const materialMult = MATERIAL_MULTIPLIERS[material] || 1.0;
-  const colorMult = COLOR_MULTIPLIERS[color] || 1.0;
-  const patternMult = PATTERN_MULTIPLIERS[pattern] || 1.0;
-
-  const adjustedPrice = conditionAdjusted * materialMult * colorMult * patternMult;
-
-  // Receipt / proof of origin bonus
-  const receiptBonus = hasReceipt ? 1.07 : 1.0;
-
-  // Hype factor — small addition for highly sought-after brands
-  const hypeFactor = 1 + (brandData.hypeScore - 0.5) * 0.15;
-
-  const modelPrice = adjustedPrice * receiptBonus * hypeFactor;
-
-  // Blend real market data (primary) with model prediction (prior) based on listing count
-  const realCount = realAggregate?.count || 0;
-  const w = realDataWeight(realCount);
-  const useRealData = w > 0;
-  let priceMid, priceLow, priceHigh, dataSource;
-  if (useRealData) {
-    const realMid = realAggregate.prices.median || realAggregate.prices.mid || realAggregate.prices.weightedAvg || realAggregate.prices.avg;
-    const realLow = realAggregate.prices.low;
-    const realHigh = realAggregate.prices.high;
-    priceMid = Math.round(realMid * w + modelPrice * (1 - w));
-    priceLow = Math.round(realLow * w + modelPrice * 0.80 * (1 - w));
-    priceHigh = Math.round(realHigh * w + modelPrice * 1.20 * (1 - w));
-    dataSource = realCount >= 5 ? 'blended_70_30' : 'blended_50_50';
-  } else {
-    priceMid = Math.round(modelPrice);
-    priceLow = Math.round(modelPrice * 0.80);
-    priceHigh = Math.round(modelPrice * 1.20);
-    dataSource = realAggregate ? 'model_fallback' : 'model';
-  }
-  const retailMid = resaleMid;
-
+  const count = realAggregate?.count || 0;
   const { base: searchQuery, enriched: enrichedQuery } = buildSearchQuery(brand, productName, category, material, color);
 
-  const dynamicMods = useRealData ? (realAggregate.platformModifiers || {}) : {};
-  const platformPrices = {};
-  Object.entries(PLATFORMS).forEach(([key, platform]) => {
-    // Dynamic modifier from real data if available; otherwise static fallback
-    const dynMod = dynamicMods[key];
-    const modifier = (dynMod && Number.isFinite(dynMod) && dynMod > 0.3 && dynMod < 3) ? dynMod : platform.priceModifier;
-    const variance = useRealData ? 0 : (seededRandom(key.length * 100 + brand.length)() * 0.12 - 0.06);
-    const platformQuery = key === "vestiaire" ? enrichedQuery : searchQuery;
-    const realCount = useRealData ? (realAggregate.platformStats?.[key]?.count ?? null) : null;
-    platformPrices[key] = {
-      low: Math.round(priceLow * modifier * (1 + variance)),
-      mid: Math.round(priceMid * modifier * (1 + variance)),
-      high: Math.round(priceHigh * modifier * (1 + variance)),
-      listings: realCount !== null ? realCount : Math.floor(seededRandom(key.length * 50 + brand.length)() * 5) + 3,
-      searchUrl: key === "vestiaire" ? platform.searchUrl(platformQuery) : platform.searchUrl(searchQuery, brand),
-      modifier: Math.round(modifier * 100) / 100,
-      isDynamic: !!(dynMod && Number.isFinite(dynMod) && dynMod > 0.3 && dynMod < 3),
+  // No real data → signal "no data" state; caller renders an empty/error state.
+  if (!realAggregate || count < REAL_DATA_MIN_LISTINGS) {
+    const platformPricesEmpty = {};
+    Object.entries(PLATFORMS).forEach(([key, platform]) => {
+      const platformQuery = key === "vestiaire" ? enrichedQuery : searchQuery;
+      platformPricesEmpty[key] = {
+        low: 0, mid: 0, high: 0, listings: 0,
+        searchUrl: key === "vestiaire" ? platform.searchUrl(platformQuery) : platform.searchUrl(searchQuery, brand),
+        modifier: platform.priceModifier,
+        isDynamic: false,
+      };
+    });
+    return {
+      priceLow: 0, priceMid: 0, priceHigh: 0, platformPrices: platformPricesEmpty,
+      confidence: 0, tier: brandData.tier, hypeScore: brandData.hypeScore, retentionRate: brandData.retentionRate,
+      conditionMultiplier: condition.multiplier, retailMid: 0, listings: [], searchQuery, enrichedQuery,
+      materialMult: MATERIAL_MULTIPLIERS[material] || 1.0, colorMult: COLOR_MULTIPLIERS[color] || 1.0,
+      patternMult: PATTERN_MULTIPLIERS[pattern] || 1.0, receiptBonus: hasReceipt ? 1.07 : 1.0,
+      farfetchQuote: null, platformNetPrices: {},
+      dataSource: 'no_data',
+      realAggregate: realAggregate || null,
+      noData: true,
+      noDataReason: count === 0
+        ? 'Keine Produkte auf den Plattformen gefunden.'
+        : `Nur ${count} Listings gefunden – für eine valide Preisempfehlung sind mindestens ${REAL_DATA_MIN_LISTINGS} nötig.`,
     };
-  });
-
-  let confidence;
-  if (useRealData) {
-    // Real-data confidence, floored by model prior so a sparse-but-clean match still reads OK
-    const modelPrior = Math.round((
-      (tier === "S" ? 0.95 : tier === "A" ? 0.82 : tier === "B" ? 0.68 : 0.50) * 0.5
-      + condition.multiplier * 0.3
-      + brandData.hypeScore * 0.2
-    ) * 100);
-    confidence = Math.min(98, Math.max(realAggregate.confidence, Math.round(modelPrior * 0.8)));
-  } else {
-    const dataAvailability = tier === "S" ? 0.95 : tier === "A" ? 0.82 : tier === "B" ? 0.68 : 0.50;
-    confidence = Math.min(Math.round((dataAvailability * 0.5 + condition.multiplier * 0.3 + brandData.hypeScore * 0.2) * 100), 98);
   }
 
-  const listings = generateListings(brand, category, conditionId, priceMid, productName, material, color);
+  // Pure real-data pricing: percentiles from scraped listings (after IQR cleaning upstream).
+  const priceMid = Math.round(realAggregate.prices.median || realAggregate.prices.mid);
+  const priceLow = Math.round(realAggregate.prices.low);
+  const priceHigh = Math.round(realAggregate.prices.high);
+
+  // Per-platform prices: from actual averages of scraped listings per platform. No synthetic modifiers.
+  const platformPrices = {};
+  Object.entries(PLATFORMS).forEach(([key, platform]) => {
+    const platformQuery = key === "vestiaire" ? enrichedQuery : searchQuery;
+    const stats = realAggregate.platformStats?.[key];
+    const plListings = (realAggregate.realListings || []).filter(l => l.platformKey === key);
+    if (stats && stats.count > 0 && plListings.length > 0) {
+      const sorted = [...plListings].map(l => l.price).sort((a, b) => a - b);
+      const pLow = Math.round(sorted[Math.floor(sorted.length * 0.25)] || sorted[0]);
+      const pHigh = Math.round(sorted[Math.floor(sorted.length * 0.75)] || sorted[sorted.length - 1]);
+      platformPrices[key] = {
+        low: pLow,
+        mid: Math.round(stats.avg),
+        high: pHigh,
+        listings: stats.count,
+        searchUrl: key === "vestiaire" ? platform.searchUrl(platformQuery) : platform.searchUrl(searchQuery, brand),
+        modifier: Math.round((stats.avg / priceMid) * 100) / 100,
+        isDynamic: true,
+      };
+    } else {
+      // Platform returned nothing — show overall price range as proxy so UI doesn't break.
+      platformPrices[key] = {
+        low: priceLow, mid: priceMid, high: priceHigh, listings: 0,
+        searchUrl: key === "vestiaire" ? platform.searchUrl(platformQuery) : platform.searchUrl(searchQuery, brand),
+        modifier: 1,
+        isDynamic: false,
+      };
+    }
+  });
+
+  const confidence = Math.min(98, realAggregate.confidence || 0);
+
+  // Real scraped listings → UI shape. No synthetic listings.
+  const listings = (realAggregate.realListings || []).map(transformRealListingForUi);
 
   const farfetchQuote = calculateFarfetchQuote(brand, priceMid, condition.multiplier);
 
@@ -643,12 +649,20 @@ function calculatePrice(brand, category, conditionId, productName, material, col
   });
 
   return {
-    priceLow, priceMid, priceHigh, platformPrices, confidence, tier, hypeScore: brandData.hypeScore, retentionRate: brandData.retentionRate, conditionMultiplier: condition.multiplier, retailMid, listings, searchQuery, enrichedQuery,
-    materialMult, colorMult, patternMult, receiptBonus,
+    priceLow, priceMid, priceHigh, platformPrices, confidence,
+    tier: brandData.tier, hypeScore: brandData.hypeScore, retentionRate: brandData.retentionRate,
+    conditionMultiplier: condition.multiplier,
+    retailMid: priceMid,
+    listings, searchQuery, enrichedQuery,
+    materialMult: MATERIAL_MULTIPLIERS[material] || 1.0,
+    colorMult: COLOR_MULTIPLIERS[color] || 1.0,
+    patternMult: PATTERN_MULTIPLIERS[pattern] || 1.0,
+    receiptBonus: hasReceipt ? 1.07 : 1.0,
     farfetchQuote,
     platformNetPrices,
-    dataSource,
-    realAggregate: useRealData ? realAggregate : null,
+    dataSource: 'real_only',
+    realAggregate,
+    noData: false,
   };
 }
 
@@ -1014,67 +1028,62 @@ function MaisonOPricing() {
 
   const handleCalculate = useCallback(() => {
     if (!brand || !category || !condition) return;
+    if (!productName || !productName.trim()) {
+      alert('Bitte Produktnamen angeben — ohne Produktnamen kann nicht gescrapt werden.');
+      return;
+    }
     setIsCalculating(true);
     setResult(null);
     setSelectedListing(null);
     setLiveDataLoading(true);
     setUseRealData(false);
+    setActiveTab("products");
+    setPlatformFilter("all");
 
-    setTimeout(() => {
-      const pricing = calculatePrice(brand, category, condition, productName, material, color, pattern, hasReceipt);
-      setResult(pricing);
-      setIsCalculating(false);
-      setActiveTab("products");
-      setPlatformFilter("all");
+    // Scrape first, then compute price purely from real data
+    fetchRealListings(brand, category, productName, material, color)
+      .then(realData => {
+        const brandData = BRAND_DATABASE[brand];
+        const condObj = CONDITIONS.find(c => c.id === condition);
+        const searchContext = {
+          brand, productName, material, color,
+          conditionId: condition,
+          expectedConditionMult: condObj?.multiplier ?? 0.80,
+        };
+        const realAggregate = realData
+          ? convertRealListingsToPricing(realData, brandData, category, searchContext)
+          : null;
 
-      if (pricing) {
-        setSearchHistory(prev => [
-          {
-            brand,
-            category,
-            condition,
-            productName,
-            price: pricing.priceMid,
-            timestamp: new Date().toLocaleTimeString("de-DE")
-          },
-          ...prev
-        ].slice(0, 10));
-      }
-
-      // Fetch real listings in background and re-price with blended data
-      if (productName && productName.trim()) {
-        fetchRealListings(brand, category, productName, material, color)
-          .then(realData => {
-            if (!realData) { setLiveDataLoading(false); return; }
-
-            const brandData = BRAND_DATABASE[brand];
-            const condObj = CONDITIONS.find(c => c.id === condition);
-            const searchContext = {
-              brand, productName, material, color,
-              conditionId: condition,
-              expectedConditionMult: condObj?.multiplier ?? 0.80,
-            };
-            const realAggregate = convertRealListingsToPricing(realData, brandData, category, searchContext);
-
-            setLiveData(realData);
-            if (realAggregate && realAggregate.count >= REAL_DATA_MIN_LISTINGS) {
-              const blended = calculatePrice(brand, category, condition, productName, material, color, pattern, hasReceipt, realAggregate);
-              setResult(blended);
-              setUseRealData(true);
-            } else if (realAggregate && realAggregate.count > 0) {
-              // Not enough clean listings for a blended price — surface the raw aggregate for transparency but keep model price
-              setUseRealData(false);
-            }
-            setLiveDataLoading(false);
-          })
-          .catch(err => {
-            console.error('Real data fetch failed:', err);
-            setLiveDataLoading(false);
-          });
-      } else {
+        setLiveData(realData || null);
+        const pricing = calculatePrice(
+          brand, category, condition, productName, material, color, pattern, hasReceipt,
+          realAggregate
+        );
+        setResult(pricing);
+        setUseRealData(!!(pricing && !pricing.noData));
+        setIsCalculating(false);
         setLiveDataLoading(false);
-      }
-    }, 1200);
+
+        if (pricing && !pricing.noData) {
+          setSearchHistory(prev => [
+            {
+              brand, category, condition, productName,
+              price: pricing.priceMid,
+              timestamp: new Date().toLocaleTimeString("de-DE"),
+            },
+            ...prev,
+          ].slice(0, 10));
+        }
+      })
+      .catch(err => {
+        console.error('Scrape failed:', err);
+        const pricing = calculatePrice(brand, category, condition, productName, material, color, pattern, hasReceipt, null);
+        setResult(pricing);
+        setUseRealData(false);
+        setIsCalculating(false);
+        setLiveDataLoading(false);
+      });
+
   }, [brand, category, condition, productName, material, color, pattern, hasReceipt]);
 
   // Image upload handlers
@@ -1296,14 +1305,14 @@ function MaisonOPricing() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "16px" }}>
                 <div>
                   <div style={{ fontSize: "10px", textTransform: "uppercase", letterSpacing: "2px", color: "#888", marginBottom: "6px" }}>Empfohlene Preisspanne</div>
-                  <div style={{ fontSize: "38px", fontWeight: 700, color: "#C8FF00", letterSpacing: "-1.5px", lineHeight: 1 }}>
-                    {result.priceLow.toLocaleString("de-DE")} — {result.priceHigh.toLocaleString("de-DE")} €
+                  <div style={{ fontSize: "38px", fontWeight: 700, color: result.noData ? "#555" : "#C8FF00", letterSpacing: "-1.5px", lineHeight: 1 }}>
+                    {result.noData ? "— keine Daten —" : `${result.priceLow.toLocaleString("de-DE")} — ${result.priceHigh.toLocaleString("de-DE")} €`}
                   </div>
                   <div style={{ fontSize: "13px", color: "#777", marginTop: "6px" }}>
                     {brand} · {category}{subcategory ? ` (${subcategory})` : ""} · {conditionObj?.label}
                     {material ? ` · ${material}` : ""}{color ? ` · ${color}` : ""}{pattern ? ` · ${pattern}` : ""}
                     {hasReceipt ? " · Mit Nachweis" : ""}
-                    {" · "}Sweetspot: <strong style={{ color: "#FFF" }}>{result.priceMid.toLocaleString("de-DE")} €</strong>
+                    {!result.noData && <>{" · "}Sweetspot: <strong style={{ color: "#FFF" }}>{result.priceMid.toLocaleString("de-DE")} €</strong></>}
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
@@ -1355,6 +1364,12 @@ function MaisonOPricing() {
                     </div>
                   )}
                 </div>
+                {result.noData && !liveDataLoading && (
+                  <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: "10px", padding: "16px 20px", marginBottom: "16px", color: "#991B1B" }}>
+                    <div style={{ fontSize: "13px", fontWeight: 700, marginBottom: "4px" }}>Keine ausreichenden Marktdaten</div>
+                    <div style={{ fontSize: "12px", lineHeight: 1.5 }}>{result.noDataReason}</div>
+                  </div>
+                )}
                 <div style={{ display: "flex", gap: "8px", marginBottom: "16px", alignItems: "center", flexWrap: "wrap" }}>
                   <div style={{ fontSize: "11px", color: "#999", fontWeight: 600, textTransform: "uppercase", letterSpacing: "1px", marginRight: "4px" }}>Plattform:</div>
                   {[{ key: "all", label: "Alle" }, ...Object.entries(PLATFORMS).map(([k, v]) => ({ key: k, label: v.name, color: v.color }))].map(f => (
@@ -1394,8 +1409,9 @@ function MaisonOPricing() {
 
                 <div style={{ display: "flex", gap: "12px", marginBottom: "16px" }}>
                   {Object.entries(PLATFORMS).map(([key, platform]) => {
-                    const count = result.listings.filter(l => l.platform === key).length;
-                    const avgPrice = Math.round(result.listings.filter(l => l.platform === key).reduce((s, l) => s + l.price, 0) / count);
+                    const platformListings = result.listings.filter(l => l.platform === key);
+                    const count = platformListings.length;
+                    const avgPrice = count > 0 ? Math.round(platformListings.reduce((s, l) => s + l.price, 0) / count) : 0;
                     return (
                       <div key={key} style={{ flex: 1, background: "#FFF", borderRadius: "10px", padding: "12px 16px", border: "1px solid #E8E6E3", borderTop: `3px solid ${platform.color}` }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
