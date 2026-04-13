@@ -2,15 +2,20 @@ import fetch from 'node-fetch';
 import * as cheerio from 'cheerio';
 
 const VINTED_BRAND_IDS = {
-  "Hermès": 4785, "Chanel": 481, "Louis Vuitton": 417, "Gucci": 567,
-  "Dior": 671, "Prada": 3573, "Bottega Veneta": 86972, "Saint Laurent": 377,
-  "Celine": 1443, "Balenciaga": 2369, "Loewe": 24209, "Valentino": 15450529,
-  "Burberry": 364, "Fendi": 1189, "Givenchy": 2371, "Miu Miu": 1745,
-  "Versace": 2293, "Dolce & Gabbana": 1043, "Alexander McQueen": 52193,
+  "Hermès": 6021, "Chanel": 4785, "Louis Vuitton": 2775, "Gucci": 53,
+  "Dior": 258, "Prada": 11, "Bottega Veneta": 4809, "Saint Laurent": 9269,
+  "Celine": 548, "Balenciaga": 63, "Loewe": 266, "Valentino": 484,
+  "Burberry": 21, "Fendi": 255, "Givenchy": 264, "Miu Miu": 277,
+  "Versace": 495, "Dolce & Gabbana": 233, "Alexander McQueen": 52193,
   "Jacquemus": 168278, "The Row": 547584, "Brunello Cucinelli": 103740,
   "Jil Sander": 17991, "Acne Studios": 180798, "Maison Margiela": 639289,
   "Isabel Marant": 121, "Stella McCartney": 60498, "Ami Paris": 7228770,
   "Totême": 546105, "Max Mara": 465
+};
+
+const CATEGORY_HINTS = {
+  Taschen: 'Tasche', Kleidung: '', Schuhe: 'Schuhe',
+  Accessoires: '', Schmuck: 'Schmuck', Uhren: 'Uhr'
 };
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -23,8 +28,9 @@ const HEADERS_BASE = {
   'Pragma': 'no-cache'
 };
 
-const REQUEST_TIMEOUT_MS = 8000;
+const REQUEST_TIMEOUT_MS = 10000;
 const MAX_RETRIES = 1;
+const RETRY_DELAY_MS = 2000;
 
 async function fetchWithRetry(url, options = {}, retries = MAX_RETRIES) {
   let lastError;
@@ -40,22 +46,20 @@ async function fetchWithRetry(url, options = {}, retries = MAX_RETRIES) {
       clearTimeout(timer);
       lastError = err;
     }
-    if (attempt < retries) {
-      const backoff = 300 * Math.pow(2, attempt);
-      await new Promise(r => setTimeout(r, backoff));
-    }
+    if (attempt < retries) await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
   }
   throw lastError;
 }
 
-async function scrapeVinted(brand, productName, material, color) {
+async function scrapeVinted(brand, productName /* material, color intentionally dropped — too restrictive */) {
   try {
     const brandId = VINTED_BRAND_IDS[brand];
     if (!brandId) {
       return { listings: [], count: 0, error: 'Brand not found in Vinted' };
     }
-    const searchText = [productName, material, color].filter(Boolean).join(' ');
-    const url = `https://www.vinted.de/api/v2/catalog/items?search_text=${encodeURIComponent(searchText)}&brand_ids[]=${brandId}&per_page=20&order=relevance`;
+    // Vinted: brand filter via brand_ids, search_text = productName only
+    const searchText = productName || '';
+    const url = `https://www.vinted.de/api/v2/catalog/items?search_text=${encodeURIComponent(searchText)}&brand_ids[]=${brandId}&per_page=40&order=relevance`;
 
     const response = await fetchWithRetry(url, { headers: HEADERS_BASE });
     if (!response.ok) return { listings: [], count: 0, error: `Vinted API error: ${response.status}` };
@@ -83,10 +87,12 @@ async function scrapeVinted(brand, productName, material, color) {
   }
 }
 
-async function scrapeEbay(brand, productName, material, color) {
+async function scrapeEbay(brand, productName, category /* material, color dropped */) {
   try {
-    const searchText = [brand, productName, material, color].filter(Boolean).join(' ');
-    const url = `https://www.ebay.de/sch/i.html?_nkw=${encodeURIComponent(searchText)}&_sacat=0&_sop=12&LH_PrefLoc=1&rt=nc`;
+    // eBay: brand + productName + category hint (e.g. "Hermès Birkin Tasche")
+    const hint = CATEGORY_HINTS[category] || '';
+    const searchText = [brand, productName, hint].filter(Boolean).join(' ');
+    const url = `https://www.ebay.de/sch/i.html?_nkw=${encodeURIComponent(searchText)}&_sacat=0&_sop=12&_ipg=60&LH_PrefLoc=1&rt=nc`;
 
     const response = await fetchWithRetry(url, { headers: HEADERS_BASE });
     if (!response.ok) return { listings: [], count: 0, error: `eBay fetch error: ${response.status}` };
@@ -135,12 +141,13 @@ function parseEbayListings(html) {
   return listings;
 }
 
-async function scrapeVestiaire(brand, productName, material, color) {
+async function scrapeVestiaire(brand, productName /* material, color dropped */) {
   try {
-    const searchText = [brand, productName, material, color].filter(Boolean).join(' ');
+    // Vestiaire: brand + productName
+    const searchText = [brand, productName].filter(Boolean).join(' ');
 
     try {
-      const apiUrl = `https://search.vestiairecollective.com/v1/products/search?q=${encodeURIComponent(searchText)}&country=DE&limit=20`;
+      const apiUrl = `https://search.vestiairecollective.com/v1/products/search?q=${encodeURIComponent(searchText)}&country=DE&limit=40`;
       const response = await fetchWithRetry(apiUrl, { headers: HEADERS_BASE }, 0);
       if (response.ok) {
         const data = await response.json();
@@ -333,9 +340,9 @@ function extractConditionFromTitle(title) {
 
 async function scrapeAllPlatforms(brand, category, productName, material, color) {
   const [vinted, ebay, vestiaire] = await Promise.all([
-    scrapeVinted(brand, productName, material, color),
-    scrapeEbay(brand, productName, material, color),
-    scrapeVestiaire(brand, productName, material, color)
+    scrapeVinted(brand, productName),
+    scrapeEbay(brand, productName, category),
+    scrapeVestiaire(brand, productName)
   ]);
 
   return {

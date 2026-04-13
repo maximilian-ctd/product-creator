@@ -254,14 +254,14 @@ const CONDITIONS = [
 ];
 
 // ── Secondhand Market Price Ranges (actual resale prices, NOT retail) ──
-// Based on real market data: Bags retain 70-92%, Clothing only 30-40% of retail
+// S-tier captures top-end pieces (Birkin, Kelly, Daytona) where pristine prices routinely exceed 10k€
 const CATEGORY_RESALE_RANGES = {
-  Taschen:     { S: [1500, 8000], A: [600, 2800], B: [250, 1200], C: [120, 600] },
-  Kleidung:    { S: [120, 1200],  A: [60, 600],   B: [35, 350],   C: [20, 180] },
-  Schuhe:      { S: [150, 1000],  A: [80, 550],   B: [40, 300],   C: [25, 180] },
-  Accessoires: { S: [80, 1500],   A: [40, 600],   B: [25, 300],   C: [15, 150] },
-  Schmuck:     { S: [200, 5000],  A: [80, 2000],  B: [40, 800],   C: [20, 400] },
-  Uhren:       { S: [1500, 12000],A: [500, 4000],  B: [200, 1800], C: [80, 600] },
+  Taschen:     { S: [3000, 25000], A: [800, 5000], B: [300, 2000], C: [120, 800] },
+  Kleidung:    { S: [120, 1200],   A: [60, 600],   B: [35, 350],   C: [20, 180] },
+  Schuhe:      { S: [150, 1000],   A: [80, 550],   B: [40, 300],   C: [25, 180] },
+  Accessoires: { S: [80, 1500],    A: [40, 600],   B: [25, 300],   C: [15, 150] },
+  Schmuck:     { S: [500, 15000],  A: [150, 4000], B: [60, 1500],  C: [30, 600] },
+  Uhren:       { S: [3000, 30000], A: [800, 8000], B: [300, 3000], C: [100, 1000] },
 };
 
 const MATERIALS = {
@@ -347,13 +347,13 @@ function calculateFarfetchQuote(brand, priceMid, conditionMultiplier) {
   };
 }
 
-// ── Vinted Brand IDs (scraped from Vinted API) ──
+// ── Vinted Brand IDs (Vinted-DE) ──
 const VINTED_BRAND_IDS = {
-  "Hermès": 4785, "Chanel": 481, "Louis Vuitton": 417, "Gucci": 567,
-  "Dior": 671, "Prada": 3573, "Bottega Veneta": 86972, "Saint Laurent": 377,
-  "Celine": 1443, "Balenciaga": 2369, "Loewe": 24209, "Valentino": 15450529,
-  "Burberry": 364, "Fendi": 1189, "Givenchy": 2371, "Miu Miu": 1745,
-  "Versace": 2293, "Dolce & Gabbana": 1043, "Alexander McQueen": 52193,
+  "Hermès": 6021, "Chanel": 4785, "Louis Vuitton": 2775, "Gucci": 53,
+  "Dior": 258, "Prada": 11, "Bottega Veneta": 4809, "Saint Laurent": 9269,
+  "Celine": 548, "Balenciaga": 63, "Loewe": 266, "Valentino": 484,
+  "Burberry": 21, "Fendi": 255, "Givenchy": 264, "Miu Miu": 277,
+  "Versace": 495, "Dolce & Gabbana": 233, "Alexander McQueen": 52193,
   "Jacquemus": 168278, "The Row": 547584, "Brunello Cucinelli": 103740,
   "Jil Sander": 17991, "Acne Studios": 180798, "Maison Margiela": 639289,
   "Isabel Marant": 121, "Stella McCartney": 60498, "Ami Paris": 7228770,
@@ -531,10 +531,13 @@ function generateListings(brand, category, conditionId, basePrice, productName, 
   return listings.sort((a, b) => b.matchScore - a.matchScore);
 }
 
-// Minimum listings needed to trust real market data over the model
-const REAL_DATA_MIN_LISTINGS = 5;
-// Blend weight for real data when threshold is met (70% real, 30% model)
-const REAL_DATA_WEIGHT = 0.70;
+// Tiered blend weights: ≥5 listings → 70/30 real/model, 3-4 → 50/50, <3 → 100% model.
+const REAL_DATA_MIN_LISTINGS = 3;
+function realDataWeight(count) {
+  if (count >= 5) return 0.70;
+  if (count >= 3) return 0.50;
+  return 0;
+}
 
 // ── Pricing Engine ──
 function calculatePrice(brand, category, conditionId, productName, material, color, pattern, hasReceipt, realAggregate = null) {
@@ -573,17 +576,19 @@ function calculatePrice(brand, category, conditionId, productName, material, col
 
   const modelPrice = adjustedPrice * receiptBonus * hypeFactor;
 
-  // Blend real market data (primary) with model prediction (prior) when enough listings available
-  const useRealData = !!(realAggregate && realAggregate.count >= REAL_DATA_MIN_LISTINGS);
+  // Blend real market data (primary) with model prediction (prior) based on listing count
+  const realCount = realAggregate?.count || 0;
+  const w = realDataWeight(realCount);
+  const useRealData = w > 0;
   let priceMid, priceLow, priceHigh, dataSource;
   if (useRealData) {
-    const realMid = realAggregate.prices.mid || realAggregate.prices.weightedAvg || realAggregate.prices.avg;
+    const realMid = realAggregate.prices.median || realAggregate.prices.mid || realAggregate.prices.weightedAvg || realAggregate.prices.avg;
     const realLow = realAggregate.prices.low;
     const realHigh = realAggregate.prices.high;
-    priceMid = Math.round(realMid * REAL_DATA_WEIGHT + modelPrice * (1 - REAL_DATA_WEIGHT));
-    priceLow = Math.round(realLow * REAL_DATA_WEIGHT + modelPrice * 0.80 * (1 - REAL_DATA_WEIGHT));
-    priceHigh = Math.round(realHigh * REAL_DATA_WEIGHT + modelPrice * 1.20 * (1 - REAL_DATA_WEIGHT));
-    dataSource = 'blended';
+    priceMid = Math.round(realMid * w + modelPrice * (1 - w));
+    priceLow = Math.round(realLow * w + modelPrice * 0.80 * (1 - w));
+    priceHigh = Math.round(realHigh * w + modelPrice * 1.20 * (1 - w));
+    dataSource = realCount >= 5 ? 'blended_70_30' : 'blended_50_50';
   } else {
     priceMid = Math.round(modelPrice);
     priceLow = Math.round(modelPrice * 0.80);
