@@ -64,37 +64,139 @@ async function fetchRealListings(brand, category, productName, material, color) 
   }
 }
 
-function convertRealListingsToPricing(realData, brandData, category, condition) {
-  if (!realData || !realData.vinted) return null;
+// Platform reliability for luxury resale (Vestiaire curates, Vinted peer-to-peer, eBay mixed)
+const PLATFORM_RELIABILITY = { vestiaire: 1.0, vinted: 0.85, ebay: 0.70 };
+
+// Internal condition → multiplier, used to weight listings by condition match
+const CONDITION_MULT_LOOKUP = {
+  pristine: 1.00, exzellent: 0.88, charmant: 0.74,
+  authentisch: 0.58, charakter: 0.40, unknown: 0.70
+};
+
+function tokenize(s) {
+  return String(s || '').toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter(t => t.length >= 2);
+}
+
+function jaccardSimilarity(aTokens, bTokens) {
+  if (!aTokens.length || !bTokens.length) return 0;
+  const a = new Set(aTokens);
+  const b = new Set(bTokens);
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+
+function convertRealListingsToPricing(realData, brandData, category, searchContext) {
+  if (!realData) return null;
 
   try {
-    const allListings = [
-      ...(realData.vinted.listings || []),
-      ...(realData.ebay.listings || []),
-      ...(realData.vestiaire.listings || [])
-    ];
+    const platforms = ['vinted', 'ebay', 'vestiaire'];
+    const queryText = [searchContext?.brand, searchContext?.productName, searchContext?.material, searchContext?.color]
+      .filter(Boolean).join(' ');
+    const queryTokens = tokenize(queryText);
+    const expectedMult = searchContext?.expectedConditionMult ?? 0.80;
 
-    if (allListings.length === 0) return null;
+    const annotated = [];
+    platforms.forEach(p => {
+      const bucket = realData[p];
+      if (!bucket || !Array.isArray(bucket.listings)) return;
+      bucket.listings.forEach(l => {
+        const price = Number(l.price);
+        if (!Number.isFinite(price) || price < 1 || price > 50000) return;
 
-    // Calculate price statistics from real data
-    const prices = allListings.map(l => l.price).filter(p => p > 0 && p < 50000);
-    if (prices.length === 0) return null;
+        const titleTokens = tokenize(l.title);
+        const titleScore = jaccardSimilarity(queryTokens, titleTokens);
+        const platformScore = PLATFORM_RELIABILITY[p] ?? 0.6;
+        const listingMult = CONDITION_MULT_LOOKUP[l.condition] ?? 0.70;
+        const conditionScore = 1 - Math.min(1, Math.abs(listingMult - expectedMult));
 
-    prices.sort((a, b) => a - b);
-    const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
-    const median = prices[Math.floor(prices.length / 2)];
-    const p25 = prices[Math.floor(prices.length * 0.25)];
-    const p75 = prices[Math.floor(prices.length * 0.75)];
+        const relevance = Math.max(0.05,
+          titleScore * 0.55 + platformScore * 0.25 + conditionScore * 0.20
+        );
+
+        annotated.push({ ...l, platformKey: p, price, relevance });
+      });
+    });
+
+    if (annotated.length === 0) return null;
+
+    // IQR-based outlier removal
+    const sortedRaw = [...annotated].sort((a, b) => a.price - b.price);
+    const q1 = sortedRaw[Math.floor(sortedRaw.length * 0.25)].price;
+    const q3 = sortedRaw[Math.floor(sortedRaw.length * 0.75)].price;
+    const iqr = q3 - q1;
+    const lowerBound = Math.max(1, q1 - 1.5 * iqr);
+    const upperBound = q3 + 1.5 * iqr;
+    const clean = annotated.filter(l => l.price >= lowerBound && l.price <= upperBound);
+    if (clean.length === 0) return null;
+
+    // Weighted & percentile stats on cleaned data
+    const totalWeight = clean.reduce((s, l) => s + l.relevance, 0) || 1;
+    const weightedAvg = clean.reduce((s, l) => s + l.price * l.relevance, 0) / totalWeight;
+
+    const cleanSorted = [...clean].sort((a, b) => a.price - b.price);
+    const cleanPrices = cleanSorted.map(l => l.price);
+    const mean = cleanPrices.reduce((a, b) => a + b, 0) / cleanPrices.length;
+    const median = cleanPrices[Math.floor(cleanPrices.length * 0.5)];
+    const p25 = cleanPrices[Math.floor(cleanPrices.length * 0.25)];
+    const p75 = cleanPrices[Math.floor(cleanPrices.length * 0.75)];
+    const variance = cleanPrices.reduce((s, p) => s + (p - mean) ** 2, 0) / cleanPrices.length;
+    const stdDev = Math.sqrt(variance);
+    const cv = mean > 0 ? stdDev / mean : 1;
+
+    // Dynamic platform modifiers from real data
+    const platformStats = {};
+    platforms.forEach(p => {
+      const list = clean.filter(l => l.platformKey === p);
+      if (list.length > 0) {
+        const avg = list.reduce((s, l) => s + l.price, 0) / list.length;
+        platformStats[p] = { avg, count: list.length };
+      }
+    });
+    const modValues = [];
+    const platformModifiers = {};
+    platforms.forEach(p => {
+      if (platformStats[p] && mean > 0) {
+        const mod = platformStats[p].avg / mean;
+        platformModifiers[p] = mod;
+        modValues.push(mod);
+      } else {
+        platformModifiers[p] = null;
+      }
+    });
+
+    const consistency = modValues.length > 1
+      ? Math.max(0, 1 - (Math.max(...modValues) - Math.min(...modValues)))
+      : 0.5;
+
+    // Multi-dimensional confidence
+    const countScore = Math.min(1, clean.length / 20);
+    const cvScore = Math.max(0, 1 - Math.min(1, cv));
+    const coverageScore = modValues.length / 3;
+    const avgRelevance = clean.reduce((s, l) => s + l.relevance, 0) / clean.length;
+    const confidence = Math.min(98, Math.round(
+      (countScore * 0.30 + cvScore * 0.25 + coverageScore * 0.15 + avgRelevance * 0.20 + consistency * 0.10) * 100
+    ));
 
     return {
       prices: {
         low: Math.round(p25),
-        mid: Math.round(median),
+        mid: Math.round((median + weightedAvg) / 2),
         high: Math.round(p75),
-        avg: Math.round(avg)
+        avg: Math.round(mean),
+        weightedAvg: Math.round(weightedAvg),
+        median: Math.round(median)
       },
-      count: allListings.length,
-      realListings: allListings.slice(0, 30)
+      count: clean.length,
+      rawCount: annotated.length,
+      realListings: [...clean].sort((a, b) => b.relevance - a.relevance).slice(0, 30),
+      platformModifiers,
+      platformStats,
+      confidence,
+      components: { countScore, cvScore, coverageScore, avgRelevance, consistency, cv }
     };
   } catch (e) {
     console.error('Error converting real listings:', e);
@@ -429,8 +531,13 @@ function generateListings(brand, category, conditionId, basePrice, productName, 
   return listings.sort((a, b) => b.matchScore - a.matchScore);
 }
 
+// Minimum listings needed to trust real market data over the model
+const REAL_DATA_MIN_LISTINGS = 5;
+// Blend weight for real data when threshold is met (70% real, 30% model)
+const REAL_DATA_WEIGHT = 0.70;
+
 // ── Pricing Engine ──
-function calculatePrice(brand, category, conditionId, productName, material, color, pattern, hasReceipt) {
+function calculatePrice(brand, category, conditionId, productName, material, color, pattern, hasReceipt, realAggregate = null) {
   const brandData = BRAND_DATABASE[brand];
   if (!brandData) return null;
   const condition = CONDITIONS.find(c => c.id === conditionId);
@@ -464,33 +571,62 @@ function calculatePrice(brand, category, conditionId, productName, material, col
   // Hype factor — small addition for highly sought-after brands
   const hypeFactor = 1 + (brandData.hypeScore - 0.5) * 0.15;
 
-  const basePrice = adjustedPrice * receiptBonus * hypeFactor;
+  const modelPrice = adjustedPrice * receiptBonus * hypeFactor;
 
-  // Price range: ±20% to reflect real market spread
-  const priceLow = Math.round(basePrice * 0.80);
-  const priceHigh = Math.round(basePrice * 1.20);
-  const priceMid = Math.round(basePrice);
-  const retailMid = resaleMid; // for display purposes
+  // Blend real market data (primary) with model prediction (prior) when enough listings available
+  const useRealData = !!(realAggregate && realAggregate.count >= REAL_DATA_MIN_LISTINGS);
+  let priceMid, priceLow, priceHigh, dataSource;
+  if (useRealData) {
+    const realMid = realAggregate.prices.mid || realAggregate.prices.weightedAvg || realAggregate.prices.avg;
+    const realLow = realAggregate.prices.low;
+    const realHigh = realAggregate.prices.high;
+    priceMid = Math.round(realMid * REAL_DATA_WEIGHT + modelPrice * (1 - REAL_DATA_WEIGHT));
+    priceLow = Math.round(realLow * REAL_DATA_WEIGHT + modelPrice * 0.80 * (1 - REAL_DATA_WEIGHT));
+    priceHigh = Math.round(realHigh * REAL_DATA_WEIGHT + modelPrice * 1.20 * (1 - REAL_DATA_WEIGHT));
+    dataSource = 'blended';
+  } else {
+    priceMid = Math.round(modelPrice);
+    priceLow = Math.round(modelPrice * 0.80);
+    priceHigh = Math.round(modelPrice * 1.20);
+    dataSource = realAggregate ? 'model_fallback' : 'model';
+  }
+  const retailMid = resaleMid;
 
   const { base: searchQuery, enriched: enrichedQuery } = buildSearchQuery(brand, productName, category, material, color);
 
+  const dynamicMods = useRealData ? (realAggregate.platformModifiers || {}) : {};
   const platformPrices = {};
   Object.entries(PLATFORMS).forEach(([key, platform]) => {
-    const modifier = platform.priceModifier;
-    const variance = (seededRandom(key.length * 100 + brand.length)() * 0.12 - 0.06);
-    // VC gets enriched query (material/color in description search), others get base query
+    // Dynamic modifier from real data if available; otherwise static fallback
+    const dynMod = dynamicMods[key];
+    const modifier = (dynMod && Number.isFinite(dynMod) && dynMod > 0.3 && dynMod < 3) ? dynMod : platform.priceModifier;
+    const variance = useRealData ? 0 : (seededRandom(key.length * 100 + brand.length)() * 0.12 - 0.06);
     const platformQuery = key === "vestiaire" ? enrichedQuery : searchQuery;
+    const realCount = useRealData ? (realAggregate.platformStats?.[key]?.count ?? null) : null;
     platformPrices[key] = {
       low: Math.round(priceLow * modifier * (1 + variance)),
       mid: Math.round(priceMid * modifier * (1 + variance)),
       high: Math.round(priceHigh * modifier * (1 + variance)),
-      listings: Math.floor(seededRandom(key.length * 50 + brand.length)() * 5) + 3,
+      listings: realCount !== null ? realCount : Math.floor(seededRandom(key.length * 50 + brand.length)() * 5) + 3,
       searchUrl: key === "vestiaire" ? platform.searchUrl(platformQuery) : platform.searchUrl(searchQuery, brand),
+      modifier: Math.round(modifier * 100) / 100,
+      isDynamic: !!(dynMod && Number.isFinite(dynMod) && dynMod > 0.3 && dynMod < 3),
     };
   });
 
-  const dataAvailability = tier === "S" ? 0.95 : tier === "A" ? 0.82 : tier === "B" ? 0.68 : 0.50;
-  const confidence = Math.min(Math.round((dataAvailability * 0.5 + condition.multiplier * 0.3 + brandData.hypeScore * 0.2) * 100), 98);
+  let confidence;
+  if (useRealData) {
+    // Real-data confidence, floored by model prior so a sparse-but-clean match still reads OK
+    const modelPrior = Math.round((
+      (tier === "S" ? 0.95 : tier === "A" ? 0.82 : tier === "B" ? 0.68 : 0.50) * 0.5
+      + condition.multiplier * 0.3
+      + brandData.hypeScore * 0.2
+    ) * 100);
+    confidence = Math.min(98, Math.max(realAggregate.confidence, Math.round(modelPrior * 0.8)));
+  } else {
+    const dataAvailability = tier === "S" ? 0.95 : tier === "A" ? 0.82 : tier === "B" ? 0.68 : 0.50;
+    confidence = Math.min(Math.round((dataAvailability * 0.5 + condition.multiplier * 0.3 + brandData.hypeScore * 0.2) * 100), 98);
+  }
 
   const listings = generateListings(brand, category, conditionId, priceMid, productName, material, color);
 
@@ -506,6 +642,8 @@ function calculatePrice(brand, category, conditionId, productName, material, col
     materialMult, colorMult, patternMult, receiptBonus,
     farfetchQuote,
     platformNetPrices,
+    dataSource,
+    realAggregate: useRealData ? realAggregate : null,
   };
 }
 
@@ -898,13 +1036,29 @@ function MaisonOPricing() {
         ].slice(0, 10));
       }
 
-      // Fetch real listings in background
+      // Fetch real listings in background and re-price with blended data
       if (productName && productName.trim()) {
         fetchRealListings(brand, category, productName, material, color)
           .then(realData => {
-            if (realData && realData.vinted && realData.vinted.listings && realData.vinted.listings.length > 0) {
-              setLiveData(realData);
+            if (!realData) { setLiveDataLoading(false); return; }
+
+            const brandData = BRAND_DATABASE[brand];
+            const condObj = CONDITIONS.find(c => c.id === condition);
+            const searchContext = {
+              brand, productName, material, color,
+              conditionId: condition,
+              expectedConditionMult: condObj?.multiplier ?? 0.80,
+            };
+            const realAggregate = convertRealListingsToPricing(realData, brandData, category, searchContext);
+
+            setLiveData(realData);
+            if (realAggregate && realAggregate.count >= REAL_DATA_MIN_LISTINGS) {
+              const blended = calculatePrice(brand, category, condition, productName, material, color, pattern, hasReceipt, realAggregate);
+              setResult(blended);
               setUseRealData(true);
+            } else if (realAggregate && realAggregate.count > 0) {
+              // Not enough clean listings for a blended price — surface the raw aggregate for transparency but keep model price
+              setUseRealData(false);
             }
             setLiveDataLoading(false);
           })
@@ -1166,7 +1320,7 @@ function MaisonOPricing() {
             {/* Tabs */}
             <div style={{ display: "flex", gap: "3px", marginBottom: "16px", background: "#FFF", borderRadius: "10px", padding: "3px", border: "1px solid #E8E6E3" }}>
               {[
-                { id: "products", label: `Gefundene Produkte (${useRealData && liveData ? liveData.vinted.count + (liveData.ebay?.count || 0) + (liveData.vestiaire?.count || 0) : result.listings.length})${useRealData ? ' 🟢' : ''}` },
+                { id: "products", label: `Gefundene Produkte (${useRealData && liveData ? (liveData.vinted?.count || 0) + (liveData.ebay?.count || 0) + (liveData.vestiaire?.count || 0) : result.listings.length})${useRealData ? ' 🟢' : ''}` },
                 { id: "overview", label: "Plattform-Vergleich" },
                 { id: "fees", label: "Netto-Auszahlung" },
                 { id: "breakdown", label: "Preis-Breakdown" },

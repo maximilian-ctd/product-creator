@@ -1,77 +1,16 @@
 import fetch from 'node-fetch';
+import * as cheerio from 'cheerio';
 
 const VINTED_BRAND_IDS = {
-  "HermÃ¨s": 6021,
-  "Chanel": 1783,
-  "Louis Vuitton": 2656,
-  "Gucci": 53,
-  "Dior": 100665,
-  "Prada": 61,
-  "Bottega Veneta": 45624,
-  "Saint Laurent": 90703,
-  "Celine": 42096,
-  "Balenciaga": 556,
-  "Loewe": 95498,
-  "Valentino": 132,
-  "Burberry": 547,
-  "Fendi": 52,
-  "Givenchy": 51,
-  "Miu Miu": 58,
-  "Versace": 133,
-  "Dolce & Gabbana": 77,
-  "Alexander McQueen": 35,
-  "Jacquemus": 4160741,
-  "The Row": 321689,
-  "Jil Sander": 102,
-  "Lanvin": 56,
-  "Margiela": 55,
-  "Undercover": 191755,
-  "Yohji Yamamoto": 145,
-  "Comme des GarÃ§ons": 47,
-  "Issey Miyake": 54,
-  "Rick Owens": 144841,
-  "Ann Demeulemeester": 44,
-  "Peter Halley": 188923,
-  "Moschino": 59,
-  "Missoni": 60,
-  "Emilio Pucci": 62,
-  "Vivienne Westwood": 130,
-  "Paul Smith": 63,
-  "Dunhill": 78,
-  "Ferragamo": 79,
-  "Armani": 34,
-  "Cavalli": 80,
-  "Max Mara": 81,
-  "Raf Simons": 82,
-  "Oswald Boateng": 83,
-  "Hugo Boss": 84,
-  "Tom Ford": 86,
-  "Maison Martin Margiela": 87,
-  "Viktor & Rolf": 88,
-  "Hussein Chalayan": 89,
-  "John Galliano": 91,
-  "Elie Saab": 92,
-  "Haider Ackermann": 93,
-  "Peter Dundas": 94,
-  "Ulyana Sergeenko": 96,
-  "Iris van Herpen": 97,
-  "Conner McKnight": 98,
-  "Tory Burch": 131,
-  "Carolina Herrera": 134,
-  "Salvatore Ferragamo": 135,
-  "Roberto Cavalli": 136,
-  "Gianfranco FerrÃ©": 137,
-  "Zac Posen": 138,
-  "Oscar de la Renta": 139,
-  "Badgley Mischka": 140,
-  "Carolina Herrera": 141,
-  "Jenny Packham": 142,
-  "Marchesa": 143,
-  "Monique Lhuillier": 146,
-  "Vera Wang": 147,
-  "Isabel Toledo": 148,
-  "Giorgio Armani": 149,
-  "Elie Saab Couture": 150
+  "Hermès": 4785, "Chanel": 481, "Louis Vuitton": 417, "Gucci": 567,
+  "Dior": 671, "Prada": 3573, "Bottega Veneta": 86972, "Saint Laurent": 377,
+  "Celine": 1443, "Balenciaga": 2369, "Loewe": 24209, "Valentino": 15450529,
+  "Burberry": 364, "Fendi": 1189, "Givenchy": 2371, "Miu Miu": 1745,
+  "Versace": 2293, "Dolce & Gabbana": 1043, "Alexander McQueen": 52193,
+  "Jacquemus": 168278, "The Row": 547584, "Brunello Cucinelli": 103740,
+  "Jil Sander": 17991, "Acne Studios": 180798, "Maison Margiela": 639289,
+  "Isabel Marant": 121, "Stella McCartney": 60498, "Ami Paris": 7228770,
+  "Totême": 546105, "Max Mara": 465
 };
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -84,37 +23,59 @@ const HEADERS_BASE = {
   'Pragma': 'no-cache'
 };
 
+const REQUEST_TIMEOUT_MS = 8000;
+const MAX_RETRIES = 1;
+
+async function fetchWithRetry(url, options = {}, retries = MAX_RETRIES) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(timer);
+      if (response.ok || response.status === 404) return response;
+      lastError = new Error(`HTTP ${response.status}`);
+    } catch (err) {
+      clearTimeout(timer);
+      lastError = err;
+    }
+    if (attempt < retries) {
+      const backoff = 300 * Math.pow(2, attempt);
+      await new Promise(r => setTimeout(r, backoff));
+    }
+  }
+  throw lastError;
+}
+
 async function scrapeVinted(brand, productName, material, color) {
   try {
     const brandId = VINTED_BRAND_IDS[brand];
     if (!brandId) {
       return { listings: [], count: 0, error: 'Brand not found in Vinted' };
     }
-
     const searchText = [productName, material, color].filter(Boolean).join(' ');
     const url = `https://www.vinted.de/api/v2/catalog/items?search_text=${encodeURIComponent(searchText)}&brand_ids[]=${brandId}&per_page=20&order=relevance`;
 
-    const response = await fetch(url, {
-      headers: HEADERS_BASE,
-      timeout: 5000
-    });
-
-    if (!response.ok) {
-      return { listings: [], count: 0, error: `Vinted API error: ${response.status}` };
-    }
+    const response = await fetchWithRetry(url, { headers: HEADERS_BASE });
+    if (!response.ok) return { listings: [], count: 0, error: `Vinted API error: ${response.status}` };
 
     const data = await response.json();
     const items = data.items || [];
 
-    const listings = items.map(item => ({
-      title: item.title || 'Unknown',
-      price: item.price_cents ? item.price_cents / 100 : 0,
-      condition: mapVintedCondition(item.status),
-      url: `https://www.vinted.de/items/${item.id}`,
-      platform: 'Vinted',
-      imageUrl: item.photo?.high_resolution?.url || item.photo?.url || '',
-      currency: 'EUR'
-    }));
+    const listings = items
+      .map(item => ({
+        title: item.title || 'Unknown',
+        price: item.price_cents ? item.price_cents / 100 : (typeof item.price === 'object' ? parseFloat(item.price?.amount) : parseFloat(item.price)) || 0,
+        condition: mapVintedCondition(item.status || item.status_id),
+        conditionRaw: item.status,
+        url: `https://www.vinted.de/items/${item.id}`,
+        platform: 'Vinted',
+        imageUrl: item.photo?.high_resolution?.url || item.photo?.url || '',
+        currency: 'EUR',
+        createdAt: item.photo?.high_resolution?.timestamp || null
+      }))
+      .filter(l => l.price > 0);
 
     return { listings, count: listings.length };
   } catch (error) {
@@ -125,20 +86,13 @@ async function scrapeVinted(brand, productName, material, color) {
 async function scrapeEbay(brand, productName, material, color) {
   try {
     const searchText = [brand, productName, material, color].filter(Boolean).join(' ');
-    const url = `https://www.ebay.de/sch/i.html?_nkw=${encodeURIComponent(searchText)}&_sacat=0&_sop=12&rt=nc`;
+    const url = `https://www.ebay.de/sch/i.html?_nkw=${encodeURIComponent(searchText)}&_sacat=0&_sop=12&LH_PrefLoc=1&rt=nc`;
 
-    const response = await fetch(url, {
-      headers: HEADERS_BASE,
-      timeout: 5000
-    });
-
-    if (!response.ok) {
-      return { listings: [], count: 0, error: `eBay fetch error: ${response.status}` };
-    }
+    const response = await fetchWithRetry(url, { headers: HEADERS_BASE });
+    if (!response.ok) return { listings: [], count: 0, error: `eBay fetch error: ${response.status}` };
 
     const html = await response.text();
     const listings = parseEbayListings(html);
-
     return { listings, count: listings.length };
   } catch (error) {
     return { listings: [], count: 0, error: `eBay scrape failed: ${error.message}` };
@@ -147,39 +101,37 @@ async function scrapeEbay(brand, productName, material, color) {
 
 function parseEbayListings(html) {
   const listings = [];
-
   try {
-    const itemRegex = /<div[^>]*class="[^"]*s-item[^"]*"[^>]*>[\s\S]*?<\/div>/g;
-    const items = html.match(itemRegex) || [];
+    const $ = cheerio.load(html);
+    $('li.s-item, div.s-item').each((_, el) => {
+      if (listings.length >= 20) return false;
+      const $el = $(el);
+      const title = $el.find('.s-item__title [role="heading"], .s-item__title span[role="heading"], .s-item__title').first().text().trim();
+      const priceText = $el.find('.s-item__price').first().text().trim();
+      const href = $el.find('a.s-item__link').attr('href') || '';
+      const imageUrl = $el.find('.s-item__image-img, img.s-item__image-img').attr('src') || $el.find('img').attr('src') || '';
+      const subtitle = $el.find('.s-item__subtitle, .SECONDARY_INFO').first().text().trim();
 
-    items.slice(0, 20).forEach(itemHtml => {
-      const titleMatch = itemHtml.match(/<span[^>]*role="heading"[^>]*>([^<]+)<\/span>/);
-      const priceMatch = itemHtml.match(/<span[^>]*class="[^"]*s-item__price[^"]*"[^>]*>([^<]+)<\/span>/);
-      const linkMatch = itemHtml.match(/<a[^>]*href="([^"]*)"[^>]*class="[^"]*s-item__link[^"]*"/);
+      if (!title || !priceText) return;
+      if (/shop on ebay/i.test(title)) return;
 
-      if (titleMatch && priceMatch) {
-        const title = titleMatch[1].trim();
-        const priceText = priceMatch[1].trim();
-        const price = parseFloat(priceText.replace(/[â¬$,]/g, '').trim());
-        const url = linkMatch ? linkMatch[1] : '';
+      const price = parseEuroPrice(priceText);
+      if (!Number.isFinite(price) || price <= 0) return;
 
-        if (!isNaN(price) && title) {
-          listings.push({
-            title,
-            price,
-            condition: extractConditionFromTitle(title),
-            url,
-            platform: 'eBay',
-            imageUrl: '',
-            currency: 'EUR'
-          });
-        }
-      }
+      listings.push({
+        title,
+        price,
+        condition: subtitle ? mapEbayCondition(subtitle) : extractConditionFromTitle(title),
+        conditionRaw: subtitle,
+        url: href,
+        platform: 'eBay',
+        imageUrl,
+        currency: 'EUR'
+      });
     });
   } catch (e) {
     console.error('eBay parsing error:', e);
   }
-
   return listings;
 }
 
@@ -189,44 +141,36 @@ async function scrapeVestiaire(brand, productName, material, color) {
 
     try {
       const apiUrl = `https://search.vestiairecollective.com/v1/products/search?q=${encodeURIComponent(searchText)}&country=DE&limit=20`;
-      const response = await fetch(apiUrl, {
-        headers: HEADERS_BASE,
-        timeout: 5000
-      });
-
+      const response = await fetchWithRetry(apiUrl, { headers: HEADERS_BASE }, 0);
       if (response.ok) {
         const data = await response.json();
-        const items = data.products || [];
-
-        const listings = items.map(item => ({
-          title: item.name || 'Unknown',
-          price: item.price || 0,
-          condition: item.condition || 'unknown',
-          url: item.url || `https://de.vestiairecollective.com/search/?q=${encodeURIComponent(searchText)}`,
-          platform: 'Vestiaire Collective',
-          imageUrl: item.image_url || '',
-          currency: 'EUR'
-        }));
-
-        return { listings, count: listings.length };
+        const items = data.products || data.items || [];
+        if (Array.isArray(items) && items.length > 0) {
+          const listings = items
+            .map(item => ({
+              title: item.name || item.title || 'Unknown',
+              price: typeof item.price === 'object' ? parseFloat(item.price.amount) : parseFloat(item.price) || 0,
+              condition: normalizeVestiaireCondition(item.condition),
+              conditionRaw: item.condition,
+              url: item.url || `https://de.vestiairecollective.com/search/?q=${encodeURIComponent(searchText)}`,
+              platform: 'Vestiaire Collective',
+              imageUrl: item.image_url || item.imageUrl || '',
+              currency: 'EUR'
+            }))
+            .filter(l => l.price > 0);
+          return { listings, count: listings.length };
+        }
       }
     } catch (apiError) {
-      console.log('Vestiaire API failed, attempting HTML scrape');
+      // fall through to HTML scrape
     }
 
     const url = `https://de.vestiairecollective.com/search/?q=${encodeURIComponent(searchText)}`;
-    const response = await fetch(url, {
-      headers: HEADERS_BASE,
-      timeout: 5000
-    });
-
-    if (!response.ok) {
-      return { listings: [], count: 0, error: `Vestiaire fetch error: ${response.status}` };
-    }
+    const response = await fetchWithRetry(url, { headers: HEADERS_BASE });
+    if (!response.ok) return { listings: [], count: 0, error: `Vestiaire fetch error: ${response.status}` };
 
     const html = await response.text();
     const listings = parseVestiareListings(html);
-
     return { listings, count: listings.length };
   } catch (error) {
     return { listings: [], count: 0, error: `Vestiaire scrape failed: ${error.message}` };
@@ -235,63 +179,156 @@ async function scrapeVestiaire(brand, productName, material, color) {
 
 function parseVestiareListings(html) {
   const listings = [];
-
   try {
-    const itemRegex = /<article[^>]*data-testid="product-item"[^>]*>[\s\S]*?<\/article>/g;
-    const items = html.match(itemRegex) || [];
+    const $ = cheerio.load(html);
 
-    items.slice(0, 20).forEach(itemHtml => {
-      const titleMatch = itemHtml.match(/<h2[^>]*>([^<]+)<\/h2>/);
-      const priceMatch = itemHtml.match(/<span[^>]*class="[^"]*Price[^"]*"[^>]*>([^<]+)<\/span>/);
-      const linkMatch = itemHtml.match(/<a[^>]*href="([^"]*)"[^>]*class="[^"]*ProductCard[^"]*"/);
+    $('[data-testid="product-card"], [data-testid="product-item"], article.product-card, a.product-search-card').each((_, el) => {
+      if (listings.length >= 20) return false;
+      const $el = $(el);
+      const title = $el.find('h2, [data-testid="product-card-title"], .product-card__title, .product-search-card__product-title').first().text().trim();
+      const priceText = $el.find('[data-testid*="price"], [class*="Price"], [class*="price"], .product-card__price, .product-search-card__price').first().text().trim();
+      let href = $el.is('a') ? $el.attr('href') : $el.find('a').first().attr('href');
+      const imageUrl = $el.find('img').first().attr('src') || $el.find('img').first().attr('data-src') || '';
+      const conditionText = $el.find('[class*="condition" i], [data-testid*="condition"]').first().text().trim();
 
-      if (titleMatch && priceMatch) {
-        const title = titleMatch[1].trim();
-        const priceText = priceMatch[1].trim();
-        const price = parseFloat(priceText.replace(/[â¬$,]/g, '').trim());
-        const url = linkMatch ? `https://de.vestiairecollective.com${linkMatch[1]}` : '';
+      if (!title || !priceText) return;
+      const price = parseEuroPrice(priceText);
+      if (!Number.isFinite(price) || price <= 0) return;
 
-        if (!isNaN(price) && title) {
-          listings.push({
-            title,
-            price,
-            condition: extractConditionFromTitle(title),
-            url,
-            platform: 'Vestiaire Collective',
-            imageUrl: '',
-            currency: 'EUR'
-          });
-        }
-      }
+      if (href && !href.startsWith('http')) href = `https://de.vestiairecollective.com${href}`;
+
+      listings.push({
+        title,
+        price,
+        condition: conditionText ? normalizeVestiaireCondition(conditionText) : extractConditionFromTitle(title),
+        conditionRaw: conditionText,
+        url: href || '',
+        platform: 'Vestiaire Collective',
+        imageUrl,
+        currency: 'EUR'
+      });
     });
+
+    if (listings.length === 0) {
+      const jsonMatch = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+      if (jsonMatch) {
+        try {
+          const data = JSON.parse(jsonMatch[1]);
+          const items = findItemsInObject(data);
+          items.slice(0, 20).forEach(item => {
+            const price = typeof item.price === 'object' ? parseFloat(item.price.amount) : parseFloat(item.price);
+            if (Number.isFinite(price) && price > 0 && item.name) {
+              listings.push({
+                title: item.name,
+                price,
+                condition: normalizeVestiaireCondition(item.condition),
+                conditionRaw: item.condition,
+                url: item.link || item.url || '',
+                platform: 'Vestiaire Collective',
+                imageUrl: item.imageUrl || item.image_url || '',
+                currency: 'EUR'
+              });
+            }
+          });
+        } catch {}
+      }
+    }
   } catch (e) {
     console.error('Vestiaire parsing error:', e);
   }
-
   return listings;
 }
 
+function findItemsInObject(obj, depth = 0) {
+  if (depth > 6 || !obj || typeof obj !== 'object') return [];
+  if (Array.isArray(obj)) {
+    if (obj.length > 0 && obj[0] && typeof obj[0] === 'object' && (obj[0].name || obj[0].title) && (obj[0].price !== undefined)) {
+      return obj;
+    }
+    for (const v of obj) {
+      const r = findItemsInObject(v, depth + 1);
+      if (r.length) return r;
+    }
+    return [];
+  }
+  for (const k of Object.keys(obj)) {
+    const r = findItemsInObject(obj[k], depth + 1);
+    if (r.length) return r;
+  }
+  return [];
+}
+
+function parseEuroPrice(text) {
+  if (!text) return NaN;
+  const cleaned = text.replace(/[^\d.,-]/g, '');
+  if (!cleaned) return NaN;
+  const hasComma = cleaned.includes(',');
+  const hasDot = cleaned.includes('.');
+  let normalized;
+  if (hasComma && hasDot) {
+    normalized = cleaned.replace(/\./g, '').replace(',', '.');
+  } else if (hasComma) {
+    const parts = cleaned.split(',');
+    normalized = parts.length === 2 && parts[1].length <= 2 ? cleaned.replace(',', '.') : cleaned.replace(/,/g, '');
+  } else {
+    const parts = cleaned.split('.');
+    normalized = parts.length > 2 ? cleaned.replace(/\./g, '') : cleaned;
+  }
+  return parseFloat(normalized);
+}
+
+// ── Condition normalization to 5 internal states ──
+// Internal: pristine | exzellent | charmant | authentisch | charakter
 function mapVintedCondition(status) {
-  const conditionMap = {
-    'good': 'Good',
-    'excellent': 'Excellent',
-    'never_worn': 'Never Worn',
-    'never_worn_with_tag': 'New with Tag',
-    'like_new': 'Like New',
-    'fair': 'Fair',
-    'poor': 'Poor'
+  const s = String(status || '').toLowerCase();
+  const map = {
+    'new_with_tags': 'pristine',
+    'never_worn_with_tag': 'pristine',
+    'new_without_tags': 'pristine',
+    'never_worn': 'pristine',
+    'like_new': 'exzellent',
+    'very_good': 'exzellent',
+    'excellent': 'exzellent',
+    'good': 'charmant',
+    'satisfactory': 'authentisch',
+    'fair': 'authentisch',
+    'poor': 'charakter',
+    '1': 'pristine', '2': 'exzellent', '3': 'charmant', '4': 'authentisch', '5': 'charakter'
   };
-  return conditionMap[status] || 'Unknown';
+  return map[s] || 'unknown';
+}
+
+function mapEbayCondition(subtitle) {
+  const s = subtitle.toLowerCase();
+  if (/neu mit etikett|brand new|new with tag/.test(s)) return 'pristine';
+  if (/neu$|neu\b|new$|\bnew\b/.test(s)) return 'pristine';
+  if (/neuwertig|like new|wie neu/.test(s)) return 'exzellent';
+  if (/sehr gut|very good|excellent/.test(s)) return 'exzellent';
+  if (/gut\b|good/.test(s)) return 'charmant';
+  if (/akzeptabel|acceptable|befriedigend/.test(s)) return 'authentisch';
+  if (/ersatzteile|defekt|for parts/.test(s)) return 'charakter';
+  return extractConditionFromTitle(subtitle);
+}
+
+function normalizeVestiaireCondition(cond) {
+  if (!cond) return 'unknown';
+  const s = String(cond).toLowerCase();
+  if (/ungetragen.*etikett|never worn.*tag|brand new/.test(s)) return 'pristine';
+  if (/ungetragen|never worn/.test(s)) return 'pristine';
+  if (/sehr gut|very good|excellent/.test(s)) return 'exzellent';
+  if (/gut\b|good/.test(s)) return 'charmant';
+  if (/akzeptabel|fair|acceptable/.test(s)) return 'authentisch';
+  return 'unknown';
 }
 
 function extractConditionFromTitle(title) {
-  const lowerTitle = title.toLowerCase();
-  if (lowerTitle.includes('neu') || lowerTitle.includes('new') || lowerTitle.includes('tag')) return 'New with Tag';
-  if (lowerTitle.includes('wie neu') || lowerTitle.includes('like new')) return 'Like New';
-  if (lowerTitle.includes('excellent') || lowerTitle.includes('ausgezeichnet')) return 'Excellent';
-  if (lowerTitle.includes('good') || lowerTitle.includes('gut')) return 'Good';
-  if (lowerTitle.includes('fair') || lowerTitle.includes('befriedigend')) return 'Fair';
-  return 'Unknown';
+  const t = String(title || '').toLowerCase();
+  if (/neu mit etikett|new with tag|\bnwt\b/.test(t)) return 'pristine';
+  if (/wie neu|like new|neuwertig/.test(t)) return 'exzellent';
+  if (/sehr gut|excellent|ausgezeichnet/.test(t)) return 'exzellent';
+  if (/\bgut\b|\bgood\b/.test(t)) return 'charmant';
+  if (/akzeptabel|fair|befriedigend/.test(t)) return 'authentisch';
+  return 'unknown';
 }
 
 async function scrapeAllPlatforms(brand, category, productName, material, color) {
@@ -310,41 +347,32 @@ async function scrapeAllPlatforms(brand, category, productName, material, color)
   };
 }
 
-export async function handler(event, context) {
-  if (event.httpMethod === 'OPTIONS') {
-    return {
-      statusCode: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type'
-      },
-      body: ''
-    };
-  }
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type'
+};
 
+export async function handler(event) {
+  if (event.httpMethod === 'OPTIONS') {
+    return { statusCode: 200, headers: CORS_HEADERS, body: '' };
+  }
   if (event.httpMethod !== 'POST') {
     return {
       statusCode: 405,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*'
-      },
+      headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
       body: JSON.stringify({ error: 'Method not allowed' })
     };
   }
 
   try {
-    const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+    const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body || {});
     const { brand, category, productName, material, color } = body;
 
     if (!brand || !productName) {
       return {
         statusCode: 400,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*'
-        },
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
         body: JSON.stringify({ error: 'Missing required fields: brand, productName' })
       };
     }
@@ -354,8 +382,10 @@ export async function handler(event, context) {
     return {
       statusCode: 200,
       headers: {
+        ...CORS_HEADERS,
         'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*'
+        'Cache-Control': 'public, max-age=300, s-maxage=300',
+        'Netlify-CDN-Cache-Control': 'public, max-age=300, s-maxage=300'
       },
       body: JSON.stringify(results)
     };
@@ -363,14 +393,8 @@ export async function handler(event, context) {
     console.error('Function error:', error);
     return {
       statusCode: 500,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*'
-      },
-      body: JSON.stringify({
-        error: 'Internal server error',
-        message: error.message
-      })
+      headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: 'Internal server error', message: error.message })
     };
   }
 }
