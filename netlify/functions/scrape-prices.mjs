@@ -19,9 +19,25 @@ function parsePrice(text) {
   const m = text.replace(/\s/g, '').match(/([\d.,]+)/);
   if (!m) return 0;
   const raw = m[1];
-  const normalized = raw.includes(',') && raw.lastIndexOf(',') > raw.lastIndexOf('.')
-    ? raw.replace(/\./g, '').replace(',', '.')
-    : raw.replace(/,/g, '');
+  let normalized;
+  const hasComma = raw.includes(',');
+  const hasDot = raw.includes('.');
+  if (hasComma && hasDot) {
+    // Either "1.234,56" (DE) or "1,234.56" (EN) — whichever comes last is decimal
+    normalized = raw.lastIndexOf(',') > raw.lastIndexOf('.')
+      ? raw.replace(/\./g, '').replace(',', '.')
+      : raw.replace(/,/g, '');
+  } else if (hasComma) {
+    // "1234,56" DE decimal or "1,234" EN thousand
+    const parts = raw.split(',');
+    normalized = parts[parts.length - 1].length === 3 ? raw.replace(/,/g, '') : raw.replace(',', '.');
+  } else if (hasDot) {
+    // "1.234" DE thousand or "1.23" EN decimal
+    const parts = raw.split('.');
+    normalized = parts[parts.length - 1].length === 3 ? raw.replace(/\./g, '') : raw;
+  } else {
+    normalized = raw;
+  }
   const n = parseFloat(normalized);
   return Number.isFinite(n) ? n : 0;
 }
@@ -294,9 +310,12 @@ async function scrapeVestiairePage(brand, productName, page, diag) {
       const $el = $(el);
       // Skip if this is an inner element (only match card root)
       if ($el.parents('[class*="product-card_productCard__"]').length > 0) return;
-      const title = $el.find('[class*="productCard__text__top"], [class*="productCard__title"]').first().text().trim()
-                 || $el.find('img').first().attr('alt')?.trim()
-                 || $el.find('a').first().attr('aria-label')?.trim() || '';
+      const linkLabel = $el.find('a[class*="productLink"], a').first().attr('aria-label')?.trim();
+      const imgAlt = $el.find('img').first().attr('alt')?.trim();
+      const title = linkLabel
+                 || imgAlt
+                 || $el.find('[class*="productCard__text__top"], [class*="productCard__title"], [class*="brand"], [class*="description"]').first().text().trim()
+                 || '';
       const price = parsePrice(
         $el.find('[class*="productCard__text--price"]:not([class*="regularPrice"])').first().text()
         || $el.find('[class*="productCard__text--price"]').first().text()
