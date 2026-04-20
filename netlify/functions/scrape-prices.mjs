@@ -1,417 +1,237 @@
-import fetch from 'node-fetch';
 import * as cheerio from 'cheerio';
 
+const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
 const VINTED_BRAND_IDS = {
-  "Hermès": 6021, "Chanel": 4785, "Louis Vuitton": 2775, "Gucci": 53,
-  "Dior": 258, "Prada": 11, "Bottega Veneta": 4809, "Saint Laurent": 9269,
-  "Celine": 548, "Balenciaga": 63, "Loewe": 266, "Valentino": 484,
-  "Burberry": 21, "Fendi": 255, "Givenchy": 264, "Miu Miu": 277,
-  "Versace": 495, "Dolce & Gabbana": 233, "Alexander McQueen": 52193,
-  "Jacquemus": 168278, "The Row": 547584, "Brunello Cucinelli": 103740,
-  "Jil Sander": 17991, "Acne Studios": 180798, "Maison Margiela": 639289,
-  "Isabel Marant": 121, "Stella McCartney": 60498, "Ami Paris": 7228770,
-  "Totême": 546105, "Max Mara": 465
+  'Hermès': 4785, 'Hermes': 4785, 'Chanel': 481, 'Louis Vuitton': 417,
+  'Gucci': 567, 'Dior': 671, 'Prada': 3573, 'Bottega Veneta': 86972,
+  'Saint Laurent': 377, 'Celine': 1443, 'Balenciaga': 2369, 'Loewe': 24209,
+  'Valentino': 15450529, 'Burberry': 364, 'Fendi': 1189, 'Givenchy': 2371,
+  'Miu Miu': 1745, 'Versace': 2293, 'Dolce & Gabbana': 1043,
+  'Alexander McQueen': 52193, 'Jacquemus': 168278,
 };
 
-const CATEGORY_HINTS = {
-  Taschen: 'Tasche', Kleidung: '', Schuhe: 'Schuhe',
-  Accessoires: '', Schmuck: 'Schmuck', Uhren: 'Uhr'
-};
+const PAGES_PER_PLATFORM = 3;
+const PAGE_TIMEOUT_MS = 8000;
 
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-
-const HEADERS_BASE = {
-  'User-Agent': USER_AGENT,
-  'Accept': 'application/json, text/plain, */*',
-  'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
-  'Cache-Control': 'no-cache',
-  'Pragma': 'no-cache'
-};
-
-const REQUEST_TIMEOUT_MS = 10000;
-const MAX_RETRIES = 1;
-const RETRY_DELAY_MS = 2000;
-
-async function fetchWithRetry(url, options = {}, retries = MAX_RETRIES) {
-  let lastError;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    try {
-      const response = await fetch(url, { ...options, signal: controller.signal });
-      clearTimeout(timer);
-      if (response.ok || response.status === 404) return response;
-      lastError = new Error(`HTTP ${response.status}`);
-    } catch (err) {
-      clearTimeout(timer);
-      lastError = err;
-    }
-    if (attempt < retries) await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
-  }
-  throw lastError;
+function parsePrice(text) {
+  if (!text) return 0;
+  const m = text.replace(/\s/g, '').match(/([\d.,]+)/);
+  if (!m) return 0;
+  const raw = m[1];
+  const normalized = raw.includes(',') && raw.lastIndexOf(',') > raw.lastIndexOf('.')
+    ? raw.replace(/\./g, '').replace(',', '.')
+    : raw.replace(/,/g, '');
+  const n = parseFloat(normalized);
+  return Number.isFinite(n) ? n : 0;
 }
 
-async function scrapeVinted(brand, productName /* material, color intentionally dropped — too restrictive */) {
+async function fetchWithTimeout(url, opts = {}, timeout = PAGE_TIMEOUT_MS) {
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(), timeout);
   try {
-    const brandId = VINTED_BRAND_IDS[brand];
-    if (!brandId) {
-      return { listings: [], count: 0, error: 'Brand not found in Vinted' };
-    }
-    // Vinted: brand filter via brand_ids, search_text = productName only
-    // Paginate: 2 pages × 96 = up to 192 items
-    const searchText = productName || '';
-    const pageUrls = [1, 2].map(p =>
-      `https://www.vinted.de/api/v2/catalog/items?search_text=${encodeURIComponent(searchText)}&brand_ids[]=${brandId}&per_page=96&page=${p}&order=relevance`
-    );
-
-    const all = [];
-    for (const url of pageUrls) {
-      try {
-        const response = await fetchWithRetry(url, { headers: HEADERS_BASE });
-        if (!response.ok) break;
-        const data = await response.json();
-        const items = data.items || [];
-        if (items.length === 0) break;
-        all.push(...items);
-        if (items.length < 96) break;
-      } catch {
-        break;
-      }
-    }
-
-    const listings = all
-      .map(item => ({
-        title: item.title || 'Unknown',
-        price: item.price_cents ? item.price_cents / 100 : (typeof item.price === 'object' ? parseFloat(item.price?.amount) : parseFloat(item.price)) || 0,
-        condition: mapVintedCondition(item.status || item.status_id),
-        conditionRaw: item.status,
-        url: `https://www.vinted.de/items/${item.id}`,
-        platform: 'Vinted',
-        imageUrl: item.photo?.high_resolution?.url || item.photo?.url || '',
-        currency: 'EUR'
-      }))
-      .filter(l => l.price > 0);
-
-    return { listings, count: listings.length };
-  } catch (error) {
-    return { listings: [], count: 0, error: `Vinted scrape failed: ${error.message}` };
+    return await fetch(url, { ...opts, signal: ctrl.signal });
+  } finally {
+    clearTimeout(id);
   }
 }
 
-async function scrapeEbay(brand, productName, category /* material, color dropped */) {
+async function scrapeVintedPage(brand, productName, page) {
+  const brandId = VINTED_BRAND_IDS[brand];
+  const q = `${brand} ${productName}`.trim();
+  const brandParam = brandId ? `&brand_ids[]=${brandId}` : '';
+  const url = `https://www.vinted.de/api/v2/catalog/items?search_text=${encodeURIComponent(q)}${brandParam}&per_page=40&page=${page}&order=relevance`;
+
   try {
-    // eBay: brand + productName + category hint (e.g. "Hermès Birkin Tasche")
-    const hint = CATEGORY_HINTS[category] || '';
-    const searchText = [brand, productName, hint].filter(Boolean).join(' ');
-    // eBay: single page, _ipg=240 (max) gets ~240 results
-    const url = `https://www.ebay.de/sch/i.html?_nkw=${encodeURIComponent(searchText)}&_sacat=0&_sop=12&_ipg=240&LH_PrefLoc=1&rt=nc`;
-
-    const response = await fetchWithRetry(url, { headers: HEADERS_BASE });
-    if (!response.ok) return { listings: [], count: 0, error: `eBay fetch error: ${response.status}` };
-
-    const html = await response.text();
-    const listings = parseEbayListings(html);
-    return { listings, count: listings.length };
-  } catch (error) {
-    return { listings: [], count: 0, error: `eBay scrape failed: ${error.message}` };
-  }
-}
-
-function parseEbayListings(html) {
-  const listings = [];
-  try {
-    const $ = cheerio.load(html);
-    $('li.s-item, div.s-item').each((_, el) => {
-      const $el = $(el);
-      const title = $el.find('.s-item__title [role="heading"], .s-item__title span[role="heading"], .s-item__title').first().text().trim();
-      const priceText = $el.find('.s-item__price').first().text().trim();
-      const href = $el.find('a.s-item__link').attr('href') || '';
-      const imageUrl = $el.find('.s-item__image-img, img.s-item__image-img').attr('src') || $el.find('img').attr('src') || '';
-      const subtitle = $el.find('.s-item__subtitle, .SECONDARY_INFO').first().text().trim();
-
-      if (!title || !priceText) return;
-      if (/shop on ebay/i.test(title)) return;
-
-      const price = parseEuroPrice(priceText);
-      if (!Number.isFinite(price) || price <= 0) return;
-
-      listings.push({
-        title,
-        price,
-        condition: subtitle ? mapEbayCondition(subtitle) : extractConditionFromTitle(title),
-        conditionRaw: subtitle,
-        url: href,
-        platform: 'eBay',
-        imageUrl,
-        currency: 'EUR'
-      });
+    const res = await fetchWithTimeout(url, {
+      headers: {
+        'User-Agent': UA,
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'de-DE,de;q=0.9,en;q=0.5',
+        'Referer': 'https://www.vinted.de/',
+      },
     });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.items || []).map(it => ({
+      platform: 'vinted',
+      title: it.title || '',
+      price: parseFloat(it.price?.amount ?? it.total_item_price?.amount ?? 0),
+      currency: it.price?.currency_code || 'EUR',
+      url: it.url,
+      image: it.photo?.url || it.photo?.full_size_url,
+      brand: it.brand_title,
+      size: it.size_title,
+      condition: it.status,
+      city: it.user?.city,
+    })).filter(l => l.price > 0);
   } catch (e) {
-    console.error('eBay parsing error:', e);
-  }
-  return listings;
-}
-
-async function scrapeVestiaire(brand, productName /* material, color dropped */) {
-  try {
-    // Vestiaire: brand + productName
-    const searchText = [brand, productName].filter(Boolean).join(' ');
-
-    try {
-      const apiUrl = `https://search.vestiairecollective.com/v1/products/search?q=${encodeURIComponent(searchText)}&country=DE&limit=48`;
-      const response = await fetchWithRetry(apiUrl, { headers: HEADERS_BASE }, 0);
-      if (response.ok) {
-        const data = await response.json();
-        const items = data.products || data.items || [];
-        if (Array.isArray(items) && items.length > 0) {
-          const listings = items
-            .map(item => ({
-              title: item.name || item.title || 'Unknown',
-              price: typeof item.price === 'object' ? parseFloat(item.price.amount) : parseFloat(item.price) || 0,
-              condition: normalizeVestiaireCondition(item.condition),
-              conditionRaw: item.condition,
-              url: item.url || `https://de.vestiairecollective.com/search/?q=${encodeURIComponent(searchText)}`,
-              platform: 'Vestiaire Collective',
-              imageUrl: item.image_url || item.imageUrl || '',
-              currency: 'EUR'
-            }))
-            .filter(l => l.price > 0);
-          return { listings, count: listings.length };
-        }
-      }
-    } catch (apiError) {
-      // fall through to HTML scrape
-    }
-
-    const url = `https://de.vestiairecollective.com/search/?q=${encodeURIComponent(searchText)}`;
-    const response = await fetchWithRetry(url, { headers: HEADERS_BASE });
-    if (!response.ok) return { listings: [], count: 0, error: `Vestiaire fetch error: ${response.status}` };
-
-    const html = await response.text();
-    const listings = parseVestiareListings(html);
-    return { listings, count: listings.length };
-  } catch (error) {
-    return { listings: [], count: 0, error: `Vestiaire scrape failed: ${error.message}` };
-  }
-}
-
-function parseVestiareListings(html) {
-  const listings = [];
-  try {
-    const $ = cheerio.load(html);
-
-    $('[data-testid="product-card"], [data-testid="product-item"], article.product-card, a.product-search-card').each((_, el) => {
-      const $el = $(el);
-      const title = $el.find('h2, [data-testid="product-card-title"], .product-card__title, .product-search-card__product-title').first().text().trim();
-      const priceText = $el.find('[data-testid*="price"], [class*="Price"], [class*="price"], .product-card__price, .product-search-card__price').first().text().trim();
-      let href = $el.is('a') ? $el.attr('href') : $el.find('a').first().attr('href');
-      const imageUrl = $el.find('img').first().attr('src') || $el.find('img').first().attr('data-src') || '';
-      const conditionText = $el.find('[class*="condition" i], [data-testid*="condition"]').first().text().trim();
-
-      if (!title || !priceText) return;
-      const price = parseEuroPrice(priceText);
-      if (!Number.isFinite(price) || price <= 0) return;
-
-      if (href && !href.startsWith('http')) href = `https://de.vestiairecollective.com${href}`;
-
-      listings.push({
-        title,
-        price,
-        condition: conditionText ? normalizeVestiaireCondition(conditionText) : extractConditionFromTitle(title),
-        conditionRaw: conditionText,
-        url: href || '',
-        platform: 'Vestiaire Collective',
-        imageUrl,
-        currency: 'EUR'
-      });
-    });
-
-    if (listings.length === 0) {
-      const jsonMatch = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
-      if (jsonMatch) {
-        try {
-          const data = JSON.parse(jsonMatch[1]);
-          const items = findItemsInObject(data);
-          items.forEach(item => {
-            const price = typeof item.price === 'object' ? parseFloat(item.price.amount) : parseFloat(item.price);
-            if (Number.isFinite(price) && price > 0 && item.name) {
-              listings.push({
-                title: item.name,
-                price,
-                condition: normalizeVestiaireCondition(item.condition),
-                conditionRaw: item.condition,
-                url: item.link || item.url || '',
-                platform: 'Vestiaire Collective',
-                imageUrl: item.imageUrl || item.image_url || '',
-                currency: 'EUR'
-              });
-            }
-          });
-        } catch {}
-      }
-    }
-  } catch (e) {
-    console.error('Vestiaire parsing error:', e);
-  }
-  return listings;
-}
-
-function findItemsInObject(obj, depth = 0) {
-  if (depth > 6 || !obj || typeof obj !== 'object') return [];
-  if (Array.isArray(obj)) {
-    if (obj.length > 0 && obj[0] && typeof obj[0] === 'object' && (obj[0].name || obj[0].title) && (obj[0].price !== undefined)) {
-      return obj;
-    }
-    for (const v of obj) {
-      const r = findItemsInObject(v, depth + 1);
-      if (r.length) return r;
-    }
+    console.error(`[vinted p${page}]`, e.message);
     return [];
   }
-  for (const k of Object.keys(obj)) {
-    const r = findItemsInObject(obj[k], depth + 1);
-    if (r.length) return r;
+}
+
+async function scrapeEbayPage(brand, productName, category, page) {
+  const q = [brand, productName, category].filter(Boolean).join(' ').trim();
+  const url = `https://www.ebay.de/sch/i.html?_nkw=${encodeURIComponent(q)}&_ipg=60&_pgn=${page}&LH_PrefLoc=1`;
+
+  try {
+    const res = await fetchWithTimeout(url, {
+      headers: { 'User-Agent': UA, 'Accept-Language': 'de-DE,de;q=0.9' },
+    });
+    if (!res.ok) return [];
+    const html = await res.text();
+    const $ = cheerio.load(html);
+    const listings = [];
+    $('.s-item, li.s-item').each((_, el) => {
+      const $el = $(el);
+      const title = $el.find('.s-item__title, [role="heading"]').first().text().trim();
+      if (!title || /^shop on ebay$/i.test(title)) return;
+      const price = parsePrice($el.find('.s-item__price').first().text());
+      if (!price) return;
+      listings.push({
+        platform: 'ebay',
+        title,
+        price,
+        currency: 'EUR',
+        url: $el.find('a.s-item__link').first().attr('href'),
+        image: $el.find('.s-item__image-img, img').first().attr('src'),
+        condition: $el.find('.SECONDARY_INFO').first().text().trim() || undefined,
+        city: $el.find('.s-item__location').first().text().trim() || undefined,
+      });
+    });
+    return listings;
+  } catch (e) {
+    console.error(`[ebay p${page}]`, e.message);
+    return [];
   }
-  return [];
 }
 
-function parseEuroPrice(text) {
-  if (!text) return NaN;
-  const cleaned = text.replace(/[^\d.,-]/g, '');
-  if (!cleaned) return NaN;
-  const hasComma = cleaned.includes(',');
-  const hasDot = cleaned.includes('.');
-  let normalized;
-  if (hasComma && hasDot) {
-    normalized = cleaned.replace(/\./g, '').replace(',', '.');
-  } else if (hasComma) {
-    const parts = cleaned.split(',');
-    normalized = parts.length === 2 && parts[1].length <= 2 ? cleaned.replace(',', '.') : cleaned.replace(/,/g, '');
-  } else {
-    const parts = cleaned.split('.');
-    normalized = parts.length > 2 ? cleaned.replace(/\./g, '') : cleaned;
+async function scrapeVestiairePage(brand, productName, page) {
+  const q = `${brand} ${productName}`.trim();
+  const url = `https://www.vestiairecollective.com/search/?q=${encodeURIComponent(q)}&page=${page}`;
+
+  try {
+    const res = await fetchWithTimeout(url, {
+      headers: { 'User-Agent': UA, 'Accept-Language': 'de-DE,de;q=0.9' },
+    });
+    if (!res.ok) return [];
+    const html = await res.text();
+
+    const m = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+    if (m) {
+      try {
+        const data = JSON.parse(m[1]);
+        const products =
+          data?.props?.pageProps?.initialState?.search?.products ||
+          data?.props?.pageProps?.products ||
+          data?.props?.pageProps?.initialProducts ||
+          [];
+        const list = Array.isArray(products) ? products : (products?.items || []);
+        const mapped = list.map(p => ({
+          platform: 'vestiaire',
+          title: p.name || p.title || p.model?.name || '',
+          price: parseFloat(p.price?.cents ? p.price.cents / 100 : (p.price?.amount ?? p.price ?? 0)),
+          currency: p.price?.currency || 'EUR',
+          url: p.link || p.url || (p.id ? `https://www.vestiairecollective.com/p-${p.id}.shtml` : undefined),
+          image: p.pictures?.[0]?.url || p.image?.url || p.pictureUrl,
+          brand: p.brand?.name,
+          condition: p.condition?.name || p.condition,
+          size: p.size?.label,
+        })).filter(l => l.price > 0 && l.title);
+        if (mapped.length > 0) return mapped;
+      } catch { /* fall through to DOM parsing */ }
+    }
+
+    const $ = cheerio.load(html);
+    const listings = [];
+    $('[data-testid="product-card"], article.product-card').each((_, el) => {
+      const $el = $(el);
+      const title = $el.find('[data-testid="product-title"], h2, h3, .product-title').first().text().trim();
+      const price = parsePrice($el.find('[data-testid="product-price"], .product-price').first().text());
+      if (!title || !price) return;
+      const href = $el.find('a').first().attr('href');
+      listings.push({
+        platform: 'vestiaire',
+        title,
+        price,
+        currency: 'EUR',
+        url: href?.startsWith('http') ? href : href ? `https://www.vestiairecollective.com${href}` : undefined,
+        image: $el.find('img').first().attr('src'),
+      });
+    });
+    return listings;
+  } catch (e) {
+    console.error(`[vestiaire p${page}]`, e.message);
+    return [];
   }
-  return parseFloat(normalized);
 }
 
-// ── Condition normalization to 5 internal states ──
-// Internal: pristine | exzellent | charmant | authentisch | charakter
-function mapVintedCondition(status) {
-  const s = String(status || '').toLowerCase();
-  const map = {
-    'new_with_tags': 'pristine',
-    'never_worn_with_tag': 'pristine',
-    'new_without_tags': 'pristine',
-    'never_worn': 'pristine',
-    'like_new': 'exzellent',
-    'very_good': 'exzellent',
-    'excellent': 'exzellent',
-    'good': 'charmant',
-    'satisfactory': 'authentisch',
-    'fair': 'authentisch',
-    'poor': 'charakter',
-    '1': 'pristine', '2': 'exzellent', '3': 'charmant', '4': 'authentisch', '5': 'charakter'
-  };
-  return map[s] || 'unknown';
+async function scrapePlatform(name, scraper) {
+  const pages = await Promise.all(
+    Array.from({ length: PAGES_PER_PLATFORM }, (_, i) => scraper(i + 1))
+  );
+  const listings = pages.flat();
+  const seen = new Set();
+  const unique = listings.filter(l => {
+    const key = l.url || `${l.title}|${l.price}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return { listings: unique, pagesScraped: PAGES_PER_PLATFORM };
 }
 
-function mapEbayCondition(subtitle) {
-  const s = subtitle.toLowerCase();
-  if (/neu mit etikett|brand new|new with tag/.test(s)) return 'pristine';
-  if (/neu$|neu\b|new$|\bnew\b/.test(s)) return 'pristine';
-  if (/neuwertig|like new|wie neu/.test(s)) return 'exzellent';
-  if (/sehr gut|very good|excellent/.test(s)) return 'exzellent';
-  if (/gut\b|good/.test(s)) return 'charmant';
-  if (/akzeptabel|acceptable|befriedigend/.test(s)) return 'authentisch';
-  if (/ersatzteile|defekt|for parts/.test(s)) return 'charakter';
-  return extractConditionFromTitle(subtitle);
-}
+export default async (req) => {
+  if (req.method === 'OPTIONS') {
+    return new Response(null, {
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
+      },
+    });
+  }
+  if (req.method !== 'POST') {
+    return new Response('Method Not Allowed', { status: 405 });
+  }
 
-function normalizeVestiaireCondition(cond) {
-  if (!cond) return 'unknown';
-  const s = String(cond).toLowerCase();
-  if (/ungetragen.*etikett|never worn.*tag|brand new/.test(s)) return 'pristine';
-  if (/ungetragen|never worn/.test(s)) return 'pristine';
-  if (/sehr gut|very good|excellent/.test(s)) return 'exzellent';
-  if (/gut\b|good/.test(s)) return 'charmant';
-  if (/akzeptabel|fair|acceptable/.test(s)) return 'authentisch';
-  return 'unknown';
-}
+  let body;
+  try {
+    body = await req.json();
+  } catch {
+    return new Response(JSON.stringify({ error: 'Invalid JSON' }), { status: 400 });
+  }
 
-function extractConditionFromTitle(title) {
-  const t = String(title || '').toLowerCase();
-  if (/neu mit etikett|new with tag|\bnwt\b/.test(t)) return 'pristine';
-  if (/wie neu|like new|neuwertig/.test(t)) return 'exzellent';
-  if (/sehr gut|excellent|ausgezeichnet/.test(t)) return 'exzellent';
-  if (/\bgut\b|\bgood\b/.test(t)) return 'charmant';
-  if (/akzeptabel|fair|befriedigend/.test(t)) return 'authentisch';
-  return 'unknown';
-}
+  const { brand = '', category = '', productName = '' } = body;
+  if (!brand && !productName) {
+    return new Response(JSON.stringify({ error: 'brand or productName required' }), { status: 400 });
+  }
 
-async function scrapeAllPlatforms(brand, category, productName, material, color) {
+  const t0 = Date.now();
   const [vinted, ebay, vestiaire] = await Promise.all([
-    scrapeVinted(brand, productName),
-    scrapeEbay(brand, productName, category),
-    scrapeVestiaire(brand, productName)
+    scrapePlatform('vinted', p => scrapeVintedPage(brand, productName, p)),
+    scrapePlatform('ebay', p => scrapeEbayPage(brand, productName, category, p)),
+    scrapePlatform('vestiaire', p => scrapeVestiairePage(brand, productName, p)),
   ]);
 
-  return {
+  return new Response(JSON.stringify({
     vinted,
     ebay,
     vestiaire,
-    timestamp: new Date().toISOString(),
-    searchParams: { brand, category, productName, material, color }
-  };
-}
-
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type'
+    meta: {
+      query: { brand, category, productName },
+      pagesPerPlatform: PAGES_PER_PLATFORM,
+      durationMs: Date.now() - t0,
+      counts: { vinted: vinted.listings.length, ebay: ebay.listings.length, vestiaire: vestiaire.listings.length },
+    },
+  }), {
+    headers: {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'public, max-age=300',
+    },
+  });
 };
 
-export async function handler(event) {
-  if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 200, headers: CORS_HEADERS, body: '' };
-  }
-  if (event.httpMethod !== 'POST') {
-    return {
-      statusCode: 405,
-      headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ error: 'Method not allowed' })
-    };
-  }
-
-  try {
-    const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body || {});
-    const { brand, category, productName, material, color } = body;
-
-    if (!brand || !productName) {
-      return {
-        statusCode: 400,
-        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ error: 'Missing required fields: brand, productName' })
-      };
-    }
-
-    const results = await scrapeAllPlatforms(brand, category, productName, material, color);
-
-    return {
-      statusCode: 200,
-      headers: {
-        ...CORS_HEADERS,
-        'Content-Type': 'application/json',
-        'Cache-Control': 'public, max-age=300, s-maxage=300',
-        'Netlify-CDN-Cache-Control': 'public, max-age=300, s-maxage=300'
-      },
-      body: JSON.stringify(results)
-    };
-  } catch (error) {
-    console.error('Function error:', error);
-    return {
-      statusCode: 500,
-      headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ error: 'Internal server error', message: error.message })
-    };
-  }
-}
+export const config = { path: '/.netlify/functions/scrape-prices' };

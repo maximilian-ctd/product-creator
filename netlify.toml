@@ -5,9 +5,5 @@
 [functions]
   node_bundler = "esbuild"
 
-[[headers]]
-  for = "/*"
-  [headers.values]
-    Access-Control-Allow-Origin = "*"
-    Access-Control-Allow-Methods = "GET, POST, OPTIONS"
-    Access-Control-Allow-Headers = "Content-Type"
+[functions."scrape-prices"]
+  timeout = 26

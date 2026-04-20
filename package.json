@@ -1,28 +1,9 @@
 {
   "name": "maison-o-netlify",
   "version": "1.0.0",
-  "description": "Luxury Fashion Resale Pricing Tool with Real-Time Market Data",
-  "main": "index.html",
-  "scripts": {
-    "dev": "netlify dev",
-    "build": "echo 'No build step needed for static site with functions'",
-    "serve": "netlify dev"
-  },
-  "keywords": [
-    "pricing",
-    "resale",
-    "fashion",
-    "vinted",
-    "ebay",
-    "vestiaire"
-  ],
-  "author": "MAISON Ô",
-  "license": "MIT",
+  "type": "module",
+  "private": true,
   "dependencies": {
-    "cheerio": "^1.0.0-rc.12",
-    "node-fetch": "^3.3.2"
-  },
-  "devDependencies": {
-    "netlify-cli": "^17.29.1"
+    "cheerio": "^1.0.0"
   }
 }
