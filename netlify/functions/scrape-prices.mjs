@@ -48,23 +48,78 @@ async function bootstrapVintedCookies(diag) {
     diag.push(`vinted home: HTTP ${res.status}`);
 
     let raw = [];
-    if (typeof res.headers.getSetCookie === 'function') {
-      raw = res.headers.getSetCookie();
-    }
+    if (typeof res.headers.getSetCookie === 'function') raw = res.headers.getSetCookie();
     if (!raw.length) {
       const all = res.headers.get('set-cookie');
       if (all) raw = all.split(/,(?=\s*[A-Za-z0-9_-]+=)/);
     }
-    diag.push(`vinted home: ${raw.length} cookies`);
 
-    const names = raw.map(c => c.split('=')[0].trim()).filter(Boolean);
-    if (names.length) diag.push(`vinted cookies: ${names.join(',')}`);
-
-    return raw.map(c => c.split(';')[0].trim()).filter(Boolean).join('; ');
+    // Dedupe by cookie name, keep last value wins (that's browser behavior).
+    const byName = new Map();
+    for (const c of raw) {
+      const first = c.split(';')[0].trim();
+      const eq = first.indexOf('=');
+      if (eq <= 0) continue;
+      byName.set(first.slice(0, eq), first);
+    }
+    diag.push(`vinted home: ${byName.size} unique cookies (${raw.length} raw)`);
+    if (byName.size) diag.push(`vinted cookies: ${[...byName.keys()].join(',')}`);
+    return [...byName.values()].join('; ');
   } catch (e) {
     console.error('[vinted bootstrap]', e.message);
     diag.push(`vinted home: error ${e.message}`);
     return '';
+  }
+}
+
+// Fallback: scrape Vinted's HTML search page (works without API auth)
+async function scrapeVintedHtmlPage(brand, productName, page, cookieHeader, diag) {
+  const brandId = VINTED_BRAND_IDS[brand];
+  const q = `${brand} ${productName}`.trim();
+  const brandParam = brandId ? `&brand_ids[]=${brandId}` : '';
+  const url = `https://www.vinted.de/catalog?search_text=${encodeURIComponent(q)}${brandParam}&page=${page}&order=relevance`;
+
+  try {
+    const res = await fetchWithTimeout(url, {
+      headers: {
+        'User-Agent': UA,
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'de-DE,de;q=0.9',
+        ...(cookieHeader ? { 'Cookie': cookieHeader } : {}),
+      },
+    }, 10000);
+    diag.push(`vinted-html p${page}: HTTP ${res.status}`);
+    if (!res.ok) return [];
+    const html = await res.text();
+    const $ = cheerio.load(html);
+    const listings = [];
+    $('div[data-testid^="product-item-id-"]').each((_, el) => {
+      const $el = $(el);
+      const testid = $el.attr('data-testid') || '';
+      const idMatch = testid.match(/product-item-id-(\d+)/);
+      const id = idMatch?.[1];
+      const title = $el.find('[data-testid$="--description-title"]').first().text().trim()
+                 || $el.find('.new-item-box__title').first().text().trim();
+      const priceText = $el.find('[data-testid$="--price-text"]').first().text().trim()
+                    || $el.find('.new-item-box__summary--compact').first().text().trim();
+      const price = parsePrice(priceText);
+      const href = $el.find('a').first().attr('href');
+      if (!price) return;
+      listings.push({
+        platform: 'vinted',
+        title: title || `Vinted ${id}`,
+        price,
+        currency: 'EUR',
+        url: href?.startsWith('http') ? href : href ? `https://www.vinted.de${href}` : (id ? `https://www.vinted.de/items/${id}` : undefined),
+        image: $el.find('img').first().attr('src') || $el.find('img').first().attr('data-src'),
+      });
+    });
+    diag.push(`vinted-html p${page}: ${listings.length} items`);
+    return listings;
+  } catch (e) {
+    console.error(`[vinted-html p${page}]`, e.message);
+    diag.push(`vinted-html p${page}: error ${e.message}`);
+    return [];
   }
 }
 
@@ -298,8 +353,15 @@ export default async (req) => {
   const cookieHeader = await bootstrapVintedCookies(diag);
   diag.push(`vinted cookieHeader length: ${cookieHeader.length}`);
 
+  // Try Vinted API first (cleaner JSON); fall back to HTML scraping if 401.
+  const vintedPage1Api = await scrapeVintedPage(brand, productName, 1, cookieHeader, diag);
+  const vintedScraper = vintedPage1Api.length > 0
+    ? (p) => p === 1 ? Promise.resolve(vintedPage1Api) : scrapeVintedPage(brand, productName, p, cookieHeader, diag)
+    : (p) => scrapeVintedHtmlPage(brand, productName, p, cookieHeader, diag);
+  if (vintedPage1Api.length === 0) diag.push('vinted: falling back to HTML scraping');
+
   const [vinted, ebay, vestiaire] = await Promise.all([
-    scrapePlatform(p => scrapeVintedPage(brand, productName, p, cookieHeader, diag)),
+    scrapePlatform(vintedScraper),
     scrapePlatform(p => scrapeEbayPage(brand, productName, category, p, diag)),
     scrapePlatform(p => scrapeVestiairePage(brand, productName, p, diag)),
   ]);
