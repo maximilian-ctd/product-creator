@@ -242,7 +242,7 @@ async function scrapeVestiairePage(brand, productName, page, diag) {
   // render=true triggers a headless browser (10 credits/req). Slower (15-30s) but
   // ultra_premium isn't available on the free plan. Timeout sized to Netlify function limit.
   const url = scraperKey
-    ? `https://api.scraperapi.com/?api_key=${scraperKey}&url=${encodeURIComponent(target)}&render=true&country_code=de`
+    ? `https://api.scraperapi.com/?api_key=${scraperKey}&url=${encodeURIComponent(target)}&render=true`
     : target;
 
   try {
