@@ -40,16 +40,30 @@ async function fetchWithTimeout(url, opts = {}, timeout = PAGE_TIMEOUT_MS) {
 // Vinted API returns 401 without session cookies. We first hit the homepage
 // to collect Set-Cookie (access_token_web), then reuse those for API calls.
 
-async function bootstrapVintedCookies() {
+async function bootstrapVintedCookies(diag) {
   try {
     const res = await fetchWithTimeout('https://www.vinted.de/', {
       headers: { 'User-Agent': UA, 'Accept-Language': 'de-DE,de;q=0.9' },
     }, 6000);
-    const raw = res.headers.getSetCookie?.() || [];
-    if (!raw.length) return '';
-    return raw.map(c => c.split(';')[0]).join('; ');
+    diag.push(`vinted home: HTTP ${res.status}`);
+
+    let raw = [];
+    if (typeof res.headers.getSetCookie === 'function') {
+      raw = res.headers.getSetCookie();
+    }
+    if (!raw.length) {
+      const all = res.headers.get('set-cookie');
+      if (all) raw = all.split(/,(?=\s*[A-Za-z0-9_-]+=)/);
+    }
+    diag.push(`vinted home: ${raw.length} cookies`);
+
+    const names = raw.map(c => c.split('=')[0].trim()).filter(Boolean);
+    if (names.length) diag.push(`vinted cookies: ${names.join(',')}`);
+
+    return raw.map(c => c.split(';')[0].trim()).filter(Boolean).join('; ');
   } catch (e) {
     console.error('[vinted bootstrap]', e.message);
+    diag.push(`vinted home: error ${e.message}`);
     return '';
   }
 }
@@ -281,8 +295,8 @@ export default async (req) => {
   const t0 = Date.now();
   const diag = [];
 
-  const cookieHeader = await bootstrapVintedCookies();
-  diag.push(`vinted bootstrap: ${cookieHeader ? 'ok' : 'no-cookies'}`);
+  const cookieHeader = await bootstrapVintedCookies(diag);
+  diag.push(`vinted cookieHeader length: ${cookieHeader.length}`);
 
   const [vinted, ebay, vestiaire] = await Promise.all([
     scrapePlatform(p => scrapeVintedPage(brand, productName, p, cookieHeader, diag)),
