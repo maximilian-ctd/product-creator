@@ -239,14 +239,15 @@ async function scrapeVestiairePage(brand, productName, page, diag) {
   // Vestiaire is behind CloudFlare. Use ScraperAPI proxy if configured.
   const scraperKey = process.env.SCRAPER_API_KEY;
   if (page === 1) diag.push(`vestiaire: scraperapi ${scraperKey ? 'enabled' : 'DISABLED'}`);
+  // ultra_premium=true bypasses CloudFlare via residential proxy + JS solver (75 credits/req)
   const url = scraperKey
-    ? `https://api.scraperapi.com/?api_key=${scraperKey}&url=${encodeURIComponent(target)}&render=true&country_code=de&premium=true`
+    ? `https://api.scraperapi.com/?api_key=${scraperKey}&url=${encodeURIComponent(target)}&ultra_premium=true&country_code=de`
     : target;
 
   try {
     const res = await fetchWithTimeout(url, {
       headers: { 'User-Agent': UA, 'Accept-Language': 'de-DE,de;q=0.9' },
-    }, scraperKey ? 25000 : PAGE_TIMEOUT_MS);
+    }, scraperKey ? 22000 : PAGE_TIMEOUT_MS);
     diag.push(`vestiaire p${page}: HTTP ${res.status}`);
     if (!res.ok) return [];
     const html = await res.text();
@@ -367,10 +368,11 @@ export default async (req) => {
     : (p) => scrapeVintedHtmlPage(brand, productName, p, cookieHeader, diag);
   if (vintedPage1Api.length === 0) diag.push('vinted: falling back to HTML scraping');
 
+  // Vestiaire via ScraperAPI is slow (JS render + CloudFlare bypass); 1 page only.
   const [vinted, ebay, vestiaire] = await Promise.all([
     scrapePlatform(vintedScraper),
     scrapePlatform(p => scrapeEbayPage(brand, productName, category, p, diag)),
-    scrapePlatform(p => scrapeVestiairePage(brand, productName, p, diag)),
+    scrapeVestiairePage(brand, productName, 1, diag).then(listings => ({ listings, pagesScraped: 1 })),
   ]);
 
   return new Response(JSON.stringify({
