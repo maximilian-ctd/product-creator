@@ -239,15 +239,16 @@ async function scrapeVestiairePage(brand, productName, page, diag) {
   // Vestiaire is behind CloudFlare. Use ScraperAPI proxy if configured.
   const scraperKey = process.env.SCRAPER_API_KEY;
   if (page === 1) diag.push(`vestiaire: scraperapi ${scraperKey ? 'enabled' : 'DISABLED'}`);
-  // ultra_premium=true bypasses CloudFlare via residential proxy + JS solver (75 credits/req)
+  // render=true triggers a headless browser (10 credits/req). Slower (15-30s) but
+  // ultra_premium isn't available on the free plan. Timeout sized to Netlify function limit.
   const url = scraperKey
-    ? `https://api.scraperapi.com/?api_key=${scraperKey}&url=${encodeURIComponent(target)}&ultra_premium=true&country_code=de`
+    ? `https://api.scraperapi.com/?api_key=${scraperKey}&url=${encodeURIComponent(target)}&render=true&country_code=de`
     : target;
 
   try {
     const res = await fetchWithTimeout(url, {
       headers: { 'User-Agent': UA, 'Accept-Language': 'de-DE,de;q=0.9' },
-    }, scraperKey ? 22000 : PAGE_TIMEOUT_MS);
+    }, scraperKey ? 24000 : PAGE_TIMEOUT_MS);
     diag.push(`vestiaire p${page}: HTTP ${res.status}`);
     if (!res.ok) return [];
     const html = await res.text();
@@ -288,22 +289,30 @@ async function scrapeVestiairePage(brand, productName, page, diag) {
 
     const $ = cheerio.load(html);
     const listings = [];
-    $('[data-testid="product-card"], article.product-card, .product-card').each((_, el) => {
+    // Vestiaire uses CSS-modules: class names contain 'product-card' and '__<hash>'.
+    $('[class*="product-card_productCard__"]').each((_, el) => {
       const $el = $(el);
-      const title = $el.find('[data-testid="product-title"], h2, h3, .product-title').first().text().trim();
-      const price = parsePrice($el.find('[data-testid="product-price"], .product-price').first().text());
-      if (!title || !price) return;
-      const href = $el.find('a').first().attr('href');
+      // Skip if this is an inner element (only match card root)
+      if ($el.parents('[class*="product-card_productCard__"]').length > 0) return;
+      const title = $el.find('[class*="productCard__text__top"], [class*="productCard__title"]').first().text().trim()
+                 || $el.find('img').first().attr('alt')?.trim()
+                 || $el.find('a').first().attr('aria-label')?.trim() || '';
+      const price = parsePrice(
+        $el.find('[class*="productCard__text--price"]:not([class*="regularPrice"])').first().text()
+        || $el.find('[class*="productCard__text--price"]').first().text()
+      );
+      if (!price) return;
+      const href = $el.find('a[class*="productLink"], a').first().attr('href');
       listings.push({
         platform: 'vestiaire',
-        title,
+        title: title || 'Vestiaire product',
         price,
         currency: 'EUR',
         url: href?.startsWith('http') ? href : href ? `https://www.vestiairecollective.com${href}` : undefined,
         image: $el.find('img').first().attr('src'),
       });
     });
-    diag.push(`vestiaire p${page}: ${listings.length} items (DOM fallback)`);
+    diag.push(`vestiaire p${page}: ${listings.length} items (DOM)`);
     return listings;
   } catch (e) {
     console.error(`[vestiaire p${page}]`, e.message);
