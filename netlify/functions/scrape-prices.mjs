@@ -238,6 +238,7 @@ async function scrapeVestiairePage(brand, productName, page, diag) {
 
   // Vestiaire is behind CloudFlare. Use ScraperAPI proxy if configured.
   const scraperKey = process.env.SCRAPER_API_KEY;
+  if (page === 1) diag.push(`vestiaire: scraperapi ${scraperKey ? 'enabled' : 'DISABLED'}`);
   const url = scraperKey
     ? `https://api.scraperapi.com/?api_key=${scraperKey}&url=${encodeURIComponent(target)}&render=true&country_code=de&premium=true`
     : target;
