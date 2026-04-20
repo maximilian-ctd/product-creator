@@ -234,12 +234,18 @@ async function scrapeEbayPage(brand, productName, category, page, diag) {
 
 async function scrapeVestiairePage(brand, productName, page, diag) {
   const q = `${brand} ${productName}`.trim();
-  const url = `https://www.vestiairecollective.com/search/?q=${encodeURIComponent(q)}&page=${page}`;
+  const target = `https://www.vestiairecollective.com/search/?q=${encodeURIComponent(q)}&page=${page}`;
+
+  // Vestiaire is behind CloudFlare. Use ScraperAPI proxy if configured.
+  const scraperKey = process.env.SCRAPER_API_KEY;
+  const url = scraperKey
+    ? `https://api.scraperapi.com/?api_key=${scraperKey}&url=${encodeURIComponent(target)}&render=true&country_code=de&premium=true`
+    : target;
 
   try {
     const res = await fetchWithTimeout(url, {
       headers: { 'User-Agent': UA, 'Accept-Language': 'de-DE,de;q=0.9' },
-    });
+    }, scraperKey ? 25000 : PAGE_TIMEOUT_MS);
     diag.push(`vestiaire p${page}: HTTP ${res.status}`);
     if (!res.ok) return [];
     const html = await res.text();
