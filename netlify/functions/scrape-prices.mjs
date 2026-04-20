@@ -1,4 +1,8 @@
 import * as cheerio from 'cheerio';
+import { getStore } from '@netlify/blobs';
+import { createHash } from 'node:crypto';
+
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
@@ -378,13 +382,44 @@ export default async (req) => {
     return new Response(JSON.stringify({ error: 'Invalid JSON' }), { status: 400 });
   }
 
-  const { brand = '', category = '', productName = '' } = body;
+  const { brand = '', category = '', productName = '', bypassCache = false } = body;
   if (!brand && !productName) {
     return new Response(JSON.stringify({ error: 'brand or productName required' }), { status: 400 });
   }
 
   const t0 = Date.now();
   const diag = [];
+
+  // ── Cache lookup ──
+  const cacheKey = createHash('sha256')
+    .update(`${brand}|${category}|${productName}`.toLowerCase().trim())
+    .digest('hex')
+    .slice(0, 16);
+  let cacheStore = null;
+  try {
+    cacheStore = getStore('scrape-cache');
+    if (!bypassCache) {
+      const cached = await cacheStore.get(cacheKey, { type: 'json' });
+      if (cached && cached.timestamp && (Date.now() - cached.timestamp) < CACHE_TTL_MS) {
+        const ageMin = Math.round((Date.now() - cached.timestamp) / 60000);
+        cached.body.meta = {
+          ...cached.body.meta,
+          cached: true,
+          cacheAgeMinutes: ageMin,
+          responseDurationMs: Date.now() - t0,
+        };
+        return new Response(JSON.stringify(cached.body), {
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'X-Cache': 'HIT',
+          },
+        });
+      }
+    }
+  } catch (e) {
+    diag.push(`cache: unavailable (${e.message})`);
+  }
 
   const cookieHeader = await bootstrapVintedCookies(diag);
   diag.push(`vinted cookieHeader length: ${cookieHeader.length}`);
@@ -403,7 +438,7 @@ export default async (req) => {
     scrapeVestiairePage(brand, productName, 1, diag).then(listings => ({ listings, pagesScraped: 1 })),
   ]);
 
-  return new Response(JSON.stringify({
+  const responseBody = {
     vinted,
     ebay,
     vestiaire,
@@ -413,12 +448,25 @@ export default async (req) => {
       durationMs: Date.now() - t0,
       counts: { vinted: vinted.listings.length, ebay: ebay.listings.length, vestiaire: vestiaire.listings.length },
       diagnostics: diag,
+      cached: false,
     },
-  }), {
+  };
+
+  // ── Cache write (only if we got meaningful results) ──
+  const totalListings = vinted.listings.length + ebay.listings.length + vestiaire.listings.length;
+  if (cacheStore && totalListings >= 5) {
+    try {
+      await cacheStore.setJSON(cacheKey, { timestamp: Date.now(), body: responseBody });
+    } catch (e) {
+      diag.push(`cache write failed: ${e.message}`);
+    }
+  }
+
+  return new Response(JSON.stringify(responseBody), {
     headers: {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
-      'Cache-Control': 'public, max-age=300',
+      'X-Cache': 'MISS',
     },
   });
 };
