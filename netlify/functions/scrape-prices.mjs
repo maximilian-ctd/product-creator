@@ -36,7 +36,25 @@ async function fetchWithTimeout(url, opts = {}, timeout = PAGE_TIMEOUT_MS) {
   }
 }
 
-async function scrapeVintedPage(brand, productName, page) {
+// ───────────────────────── VINTED ─────────────────────────
+// Vinted API returns 401 without session cookies. We first hit the homepage
+// to collect Set-Cookie (access_token_web), then reuse those for API calls.
+
+async function bootstrapVintedCookies() {
+  try {
+    const res = await fetchWithTimeout('https://www.vinted.de/', {
+      headers: { 'User-Agent': UA, 'Accept-Language': 'de-DE,de;q=0.9' },
+    }, 6000);
+    const raw = res.headers.getSetCookie?.() || [];
+    if (!raw.length) return '';
+    return raw.map(c => c.split(';')[0]).join('; ');
+  } catch (e) {
+    console.error('[vinted bootstrap]', e.message);
+    return '';
+  }
+}
+
+async function scrapeVintedPage(brand, productName, page, cookieHeader, diag) {
   const brandId = VINTED_BRAND_IDS[brand];
   const q = `${brand} ${productName}`.trim();
   const brandParam = brandId ? `&brand_ids[]=${brandId}` : '';
@@ -47,18 +65,22 @@ async function scrapeVintedPage(brand, productName, page) {
       headers: {
         'User-Agent': UA,
         'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'de-DE,de;q=0.9,en;q=0.5',
+        'Accept-Language': 'de-DE,de;q=0.9',
         'Referer': 'https://www.vinted.de/',
+        ...(cookieHeader ? { 'Cookie': cookieHeader } : {}),
       },
     });
+    diag.push(`vinted p${page}: HTTP ${res.status}`);
     if (!res.ok) return [];
     const data = await res.json();
-    return (data.items || []).map(it => ({
+    const items = data.items || [];
+    diag.push(`vinted p${page}: ${items.length} items`);
+    return items.map(it => ({
       platform: 'vinted',
       title: it.title || '',
       price: parseFloat(it.price?.amount ?? it.total_item_price?.amount ?? 0),
       currency: it.price?.currency_code || 'EUR',
-      url: it.url,
+      url: it.url || (it.path ? `https://www.vinted.de${it.path}` : undefined),
       image: it.photo?.url || it.photo?.full_size_url,
       brand: it.brand_title,
       size: it.size_title,
@@ -67,47 +89,81 @@ async function scrapeVintedPage(brand, productName, page) {
     })).filter(l => l.price > 0);
   } catch (e) {
     console.error(`[vinted p${page}]`, e.message);
+    diag.push(`vinted p${page}: error ${e.message}`);
     return [];
   }
 }
 
-async function scrapeEbayPage(brand, productName, category, page) {
+// ───────────────────────── EBAY ─────────────────────────
+// eBay migrated from .s-item to .s-card in 2024. New selectors below.
+
+async function scrapeEbayPage(brand, productName, category, page, diag) {
   const q = [brand, productName, category].filter(Boolean).join(' ').trim();
-  const url = `https://www.ebay.de/sch/i.html?_nkw=${encodeURIComponent(q)}&_ipg=60&_pgn=${page}&LH_PrefLoc=1`;
+  const url = `https://www.ebay.de/sch/i.html?_nkw=${encodeURIComponent(q)}&_ipg=60&_pgn=${page}`;
 
   try {
     const res = await fetchWithTimeout(url, {
       headers: { 'User-Agent': UA, 'Accept-Language': 'de-DE,de;q=0.9' },
     });
+    diag.push(`ebay p${page}: HTTP ${res.status}`);
     if (!res.ok) return [];
     const html = await res.text();
     const $ = cheerio.load(html);
     const listings = [];
-    $('.s-item, li.s-item').each((_, el) => {
+
+    // New layout (2024+): .s-card with .s-card__price, .s-card__title, .s-card__link
+    $('.s-card').each((_, el) => {
       const $el = $(el);
-      const title = $el.find('.s-item__title, [role="heading"]').first().text().trim();
-      if (!title || /^shop on ebay$/i.test(title)) return;
-      const price = parsePrice($el.find('.s-item__price').first().text());
-      if (!price) return;
+      const title = $el.find('.s-card__title, .su-styled-text.primary.bold, [role="heading"]').first().text().trim();
+      const price = parsePrice($el.find('.s-card__price').first().text());
+      const href = $el.find('a.s-card__link, a').first().attr('href');
+      if (!title || !price || !href) return;
+      if (/^shop on ebay$/i.test(title)) return;
       listings.push({
         platform: 'ebay',
         title,
         price,
         currency: 'EUR',
-        url: $el.find('a.s-item__link').first().attr('href'),
-        image: $el.find('.s-item__image-img, img').first().attr('src'),
-        condition: $el.find('.SECONDARY_INFO').first().text().trim() || undefined,
-        city: $el.find('.s-item__location').first().text().trim() || undefined,
+        url: href,
+        image: $el.find('img').first().attr('src') || $el.find('img').first().attr('data-src'),
+        condition: $el.find('.s-card__subtitle, .SECONDARY_INFO').first().text().trim() || undefined,
       });
     });
+
+    // Fallback: legacy .s-item (still used occasionally)
+    if (listings.length === 0) {
+      $('li.s-item, .s-item').each((_, el) => {
+        const $el = $(el);
+        const title = $el.find('.s-item__title, [role="heading"]').first().text().trim();
+        if (!title || /^shop on ebay$/i.test(title)) return;
+        const price = parsePrice($el.find('.s-item__price').first().text());
+        if (!price) return;
+        listings.push({
+          platform: 'ebay',
+          title,
+          price,
+          currency: 'EUR',
+          url: $el.find('a.s-item__link').first().attr('href'),
+          image: $el.find('.s-item__image-img, img').first().attr('src'),
+        });
+      });
+    }
+
+    diag.push(`ebay p${page}: ${listings.length} items`);
     return listings;
   } catch (e) {
     console.error(`[ebay p${page}]`, e.message);
+    diag.push(`ebay p${page}: error ${e.message}`);
     return [];
   }
 }
 
-async function scrapeVestiairePage(brand, productName, page) {
+// ───────────────────────── VESTIAIRE ─────────────────────────
+// Vestiaire is behind CloudFlare. Direct requests get 403 "Just a moment...".
+// Without a proxy service (ScraperAPI, Bright Data, etc.) this will fail reliably.
+// Kept in place so we log it clearly and the frontend knows to degrade.
+
+async function scrapeVestiairePage(brand, productName, page, diag) {
   const q = `${brand} ${productName}`.trim();
   const url = `https://www.vestiairecollective.com/search/?q=${encodeURIComponent(q)}&page=${page}`;
 
@@ -115,20 +171,27 @@ async function scrapeVestiairePage(brand, productName, page) {
     const res = await fetchWithTimeout(url, {
       headers: { 'User-Agent': UA, 'Accept-Language': 'de-DE,de;q=0.9' },
     });
+    diag.push(`vestiaire p${page}: HTTP ${res.status}`);
     if (!res.ok) return [];
     const html = await res.text();
+    if (/Just a moment|cf-chl|cloudflare/i.test(html.slice(0, 2000))) {
+      diag.push(`vestiaire p${page}: blocked by CloudFlare`);
+      return [];
+    }
 
     const m = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
     if (m) {
       try {
         const data = JSON.parse(m[1]);
-        const products =
-          data?.props?.pageProps?.initialState?.search?.products ||
-          data?.props?.pageProps?.products ||
-          data?.props?.pageProps?.initialProducts ||
-          [];
-        const list = Array.isArray(products) ? products : (products?.items || []);
-        const mapped = list.map(p => ({
+        const search = data?.props?.pageProps?.initialState?.search
+                   || data?.props?.pageProps?.searchInitialState
+                   || {};
+        const list = search.products || search.items
+                 || data?.props?.pageProps?.products
+                 || data?.props?.pageProps?.initialProducts
+                 || [];
+        const arr = Array.isArray(list) ? list : (list?.items || []);
+        const mapped = arr.map(p => ({
           platform: 'vestiaire',
           title: p.name || p.title || p.model?.name || '',
           price: parseFloat(p.price?.cents ? p.price.cents / 100 : (p.price?.amount ?? p.price ?? 0)),
@@ -139,13 +202,16 @@ async function scrapeVestiairePage(brand, productName, page) {
           condition: p.condition?.name || p.condition,
           size: p.size?.label,
         })).filter(l => l.price > 0 && l.title);
+        diag.push(`vestiaire p${page}: ${mapped.length} items (NEXT_DATA)`);
         if (mapped.length > 0) return mapped;
-      } catch { /* fall through to DOM parsing */ }
+      } catch (err) {
+        diag.push(`vestiaire p${page}: NEXT_DATA parse failed`);
+      }
     }
 
     const $ = cheerio.load(html);
     const listings = [];
-    $('[data-testid="product-card"], article.product-card').each((_, el) => {
+    $('[data-testid="product-card"], article.product-card, .product-card').each((_, el) => {
       const $el = $(el);
       const title = $el.find('[data-testid="product-title"], h2, h3, .product-title').first().text().trim();
       const price = parsePrice($el.find('[data-testid="product-price"], .product-price').first().text());
@@ -160,14 +226,18 @@ async function scrapeVestiairePage(brand, productName, page) {
         image: $el.find('img').first().attr('src'),
       });
     });
+    diag.push(`vestiaire p${page}: ${listings.length} items (DOM fallback)`);
     return listings;
   } catch (e) {
     console.error(`[vestiaire p${page}]`, e.message);
+    diag.push(`vestiaire p${page}: error ${e.message}`);
     return [];
   }
 }
 
-async function scrapePlatform(name, scraper) {
+// ───────────────────────── ORCHESTRATION ─────────────────────────
+
+async function scrapePlatform(scraper) {
   const pages = await Promise.all(
     Array.from({ length: PAGES_PER_PLATFORM }, (_, i) => scraper(i + 1))
   );
@@ -209,10 +279,15 @@ export default async (req) => {
   }
 
   const t0 = Date.now();
+  const diag = [];
+
+  const cookieHeader = await bootstrapVintedCookies();
+  diag.push(`vinted bootstrap: ${cookieHeader ? 'ok' : 'no-cookies'}`);
+
   const [vinted, ebay, vestiaire] = await Promise.all([
-    scrapePlatform('vinted', p => scrapeVintedPage(brand, productName, p)),
-    scrapePlatform('ebay', p => scrapeEbayPage(brand, productName, category, p)),
-    scrapePlatform('vestiaire', p => scrapeVestiairePage(brand, productName, p)),
+    scrapePlatform(p => scrapeVintedPage(brand, productName, p, cookieHeader, diag)),
+    scrapePlatform(p => scrapeEbayPage(brand, productName, category, p, diag)),
+    scrapePlatform(p => scrapeVestiairePage(brand, productName, p, diag)),
   ]);
 
   return new Response(JSON.stringify({
@@ -224,6 +299,7 @@ export default async (req) => {
       pagesPerPlatform: PAGES_PER_PLATFORM,
       durationMs: Date.now() - t0,
       counts: { vinted: vinted.listings.length, ebay: ebay.listings.length, vestiaire: vestiaire.listings.length },
+      diagnostics: diag,
     },
   }), {
     headers: {
