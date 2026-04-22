@@ -192,7 +192,16 @@ function convertRealListingsToPricing(realData, brandData, category, searchConte
       },
       count: clean.length,
       rawCount: annotated.length,
-      realListings: [...clean].sort((a, b) => b.relevance - a.relevance).slice(0, 30),
+      realListings: (() => {
+        // Balanced selection: up to 15 per platform (sorted by relevance), so eBay
+        // and Vestiaire aren't starved when Vinted has many high-scoring listings.
+        const PER_PLATFORM = 15;
+        const byPlatform = { vinted: [], ebay: [], vestiaire: [] };
+        for (const l of [...clean].sort((a, b) => b.relevance - a.relevance)) {
+          if (byPlatform[l.platformKey]?.length < PER_PLATFORM) byPlatform[l.platformKey].push(l);
+        }
+        return [...byPlatform.vinted, ...byPlatform.ebay, ...byPlatform.vestiaire];
+      })(),
       platformModifiers,
       platformStats,
       confidence,
