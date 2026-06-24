@@ -391,7 +391,9 @@ export default async (req) => {
   const diag = [];
 
   // ── Cache lookup ──
-  const cacheKey = createHash('sha256')
+  // v2: includes Vestiaire (ScraperAPI). Bump this when response shape changes.
+  const CACHE_VERSION = 'v2';
+  const cacheKey = CACHE_VERSION + '-' + createHash('sha256')
     .update(`${brand}|${category}|${productName}`.toLowerCase().trim())
     .digest('hex')
     .slice(0, 16);
